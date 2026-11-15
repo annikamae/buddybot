@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Buddy the floating knight</title>
+  <desc id="desc">A cute blue and silver knight helmet with bright eyes floating over a soft shadow.</desc>
+  <defs>
+    <linearGradient id="helmet" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f8fcff"/>
+      <stop offset=".48" stop-color="#bdd8f2"/>
+      <stop offset="1" stop-color="#6f94bb"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#8ecaff"/>
+      <stop offset="1" stop-color="#2877d4"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#348ded" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#348ded" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+  </defs>
+  <ellipse cx="130" cy="218" rx="68" ry="15" fill="#2877d4" opacity=".27" filter="url(#shadow)"/>
+  <circle cx="130" cy="119" r="104" fill="url(#glow)"/>
+  <path d="M56 77 84 41l21 24c17-8 39-8 56 0l22-24 25 38-15 17c7 17 9 40 4 59-8 35-36 56-71 56s-63-21-71-56c-5-19-3-42 4-59L56 77Z" fill="#274b72" opacity=".55"/>
+  <path d="m60 73 25-32 19 24a70 70 0 0 1 50 0l20-24 23 32-15 18c8 17 10 39 5 57-8 31-31 49-64 49s-56-18-64-49c-5-18-3-40 5-57L60 73Z" fill="url(#helmet)" stroke="#f4faff" stroke-width="4" stroke-linejoin="round"/>
+  <path d="m104 65 26-35 22 36c-15-5-33-5-48-1Z" fill="url(#blue)" stroke="#d7ecff" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M82 103c13-12 30-17 48-17s35 5 48 17l-3 43c-2 23-19 38-45 38s-43-15-45-38l-3-43Z" fill="#13243a" stroke="#7199c1" stroke-width="4"/>
+  <path d="M99 126c8-8 17-8 25 0M137 126c8-8 17-8 25 0" fill="none" stroke="#76c5ff" stroke-width="7" stroke-linecap="round"/>
+  <path d="m124 146 6 6 6-6" fill="none" stroke="#ecf7ff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M71 91c15-12 34-18 59-18s44 6 59 18" fill="none" stroke="#ffffff" stroke-opacity=".85" stroke-width="5" stroke-linecap="round"/>
+  <path d="M79 168c8 15 24 24 51 24s43-9 51-24" fill="none" stroke="#4b8ac6" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="91" cy="154" r="5" fill="#f3a5b6" opacity=".8"/>
+  <circle cx="169" cy="154" r="5" fill="#f3a5b6" opacity=".8"/>
+  <path d="M116 205h29" stroke="#a9d8ff" stroke-width="4" stroke-linecap="round" opacity=".8"/>
+</svg>
