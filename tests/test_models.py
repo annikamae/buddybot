@@ -9,7 +9,7 @@ from buddy_models import create_chat_model, discover_ollama_models
 def test_discovery_excludes_cloud_routed_models(monkeypatch):
     class FakeClient:
         def __init__(self, **kwargs):
-            pass
+            del kwargs
 
         def list(self):
             return SimpleNamespace(
@@ -41,6 +41,18 @@ def test_cloud_model_name_is_allowlisted(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-placeholder")
     with pytest.raises(ValueError):
         create_chat_model("openai", "unlisted-model", allow_cloud=True)
+
+
+def test_cloud_model_is_constructed_after_explicit_consent(monkeypatch):
+    from langchain_openai import ChatOpenAI
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-placeholder")
+    model = create_chat_model(
+        "openai",
+        "gpt-4.1-mini",
+        allow_cloud=True,
+    )
+    assert isinstance(model, ChatOpenAI)
 
 
 def test_local_model_requires_nonempty_name():

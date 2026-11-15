@@ -6,19 +6,20 @@ images with a local vision model, or request a read-only sample review of a
 public GitHub repository.
 
 Buddy is a Streamlit app. Text chat and analysis use Ollama models running on
-your computer. Attachments are processed in the app process and are not
-intentionally uploaded to an AI cloud service. Public repository files are
-retrieved from GitHub’s public API when you request a review.
+your computer by default. Attachments are processed in the app process and go
+only to the selected model provider. OpenAI cloud models are optional and
+require an explicit opt-in. Public repository files are retrieved from GitHub’s
+public API only when you request a review.
 
 ## What Buddy can do
 
 | Feature | Behavior |
 |---|---|
-| Chat | Separate conversations within the current Streamlit browser session |
+| Chat | Multiple conversations, saved locally between browser sessions and app restarts |
 | Code review | Paste code or attach source/configuration files; request findings, fixes, or secure alternatives |
-| Image review | Attach images; Buddy uses the local `llava:latest` vision model |
+| Image review | Attach images; Buddy uses a detected local vision model such as `llava:latest` |
 | Documents | Extract text from PDF and DOCX files; read common text/source formats |
-| GitHub | Fetch a bounded sample of eligible files from a public repository’s default branch |
+| GitHub | Fetch a bounded sample of eligible files from a public repository’s default branch; skip sensitive filenames and redact likely credential values |
 | Website check | Make a passive HTTP `HEAD` request and inspect common response security headers |
 | Knowledge base | Retrieve relevant excerpts from local `.txt` and `.md` files in `knowledge_base/` |
 
@@ -38,9 +39,12 @@ These are Buddy’s application limits, not security or completeness guarantees.
 | Conversation context sent to the model | Most recent 10 messages |
 | Website check | One passive `HEAD` request; no redirects followed |
 
-Conversation history is held in Streamlit session state. It is not saved as a
-local chat archive and may disappear when the browser session ends or the app
-restarts. The Chroma knowledge-base index is saved under `chroma_db/`.
+Conversation history, including attached image data, is saved in a local SQLite
+database under `%LOCALAPPDATA%\Buddy` on Windows (or the user’s home directory
+on macOS/Linux). This data is not encrypted. Set `BUDDY_DATA_DIR` before
+starting Buddy to use another local directory. The Chroma knowledge-base index
+is stored alongside the database; neither is kept in the project or OneDrive
+by default.
 
 ## Requirements
 
@@ -83,8 +87,9 @@ they do not require activating the environment. If you prefer activation, run
 ### Conversations
 
 Use **New conversation** in the sidebar to start a separate chat. Select and
-rename chats from the sidebar, or delete the selected chat. Chats are isolated
-in the current browser session and are not persisted to disk.
+rename chats from the sidebar, clear the current chat, or delete it. Chats
+persist locally across app restarts. Anyone with access to the Windows account
+and its app-data files may be able to read them.
 
 ### Code and file reviews
 
@@ -104,9 +109,12 @@ In the sidebar, enter a repository’s main URL, such as
 `https://github.com/owner/repository`, then choose **Fetch & review repository**.
 Buddy reads the default branch and samples up to 12 small source/configuration
 files. It skips common dependency/build directories and obvious secret/key
-filenames. No GitHub token is requested or stored; private repositories are not
-supported. A sample review is not a full repository audit, and files outside the
-sample may contain additional issues.
+filenames, and redacts common credential assignments and private-key blocks
+before adding sampled content to a chat. Review the displayed file list and
+sampling notes. Redaction is best-effort, not a guarantee that every secret is
+detected. No GitHub token is requested or stored; private repositories are not
+supported. A sample review is not a full repository audit, and files outside
+the sample may contain additional issues.
 
 ### Website header checks
 
@@ -128,13 +136,20 @@ load, direct chat and reviews remain available.
 
 ## Privacy and safe use
 
-- `keys.env`, `.env` files, virtual environments, and the local Chroma index are
-  excluded by `.gitignore`. Keep credentials in local environment variables or
-  an untracked local env file; never commit them. An ignore rule does not remove
-  a secret already committed or published.
-- Chat and code-review inference run through the local Ollama service by
-  default. The optional GitHub feature retrieves public repository files from
-  GitHub when explicitly requested.
+- `keys.env`, `.env` files, virtual environments, local databases, and generated
+  indexes are excluded by `.gitignore`. Buddy does not load `.env` or
+  `keys.env`; cloud credentials are read from the process environment only.
+- Local Ollama is the default. OpenAI models are offered only when
+  `OPENAI_API_KEY` is present in the process environment and **Allow OpenAI
+  cloud requests** is explicitly enabled. Cloud mode sends prompts, code,
+  repository samples, and attachments to OpenAI. Uncheck the option to return
+  to local inference. Do not enable cloud use for sensitive content.
+- Buddy is a single-user local app without authentication. Keep the server
+  bound to `127.0.0.1`; Buddy refuses non-loopback Streamlit server addresses.
+  The local database and image attachments are not encrypted.
+- To enable cloud access, add `OPENAI_API_KEY` to your Windows user environment
+  variables, then start a new terminal and restart Buddy. Do not put the key in
+  this project, `.env.example`, or a command you intend to share.
 - Do not submit passwords, API keys, access tokens, session cookies, or private
   customer data. Rotate any credentials accidentally exposed in a file.
 - Repository content, uploaded files, images, and retrieved references are
@@ -148,10 +163,10 @@ load, direct chat and reviews remain available.
 
 1. Revoke or rotate every credential that may have been in the file. Deleting
    the file from the latest version does not make an exposed credential safe.
-2. Keep the local secret file untracked. `.gitignore` is now configured for
-   `keys.env`; verify with `git check-ignore -v keys.env`.
-3. Remove the file from Git's index without deleting your local copy:
-   `git rm --cached -- keys.env`, then commit the removal.
+2. Keep local credentials out of Git. `.gitignore` is configured for `keys.env`
+   and `.env` variants; verify with `git check-ignore -v keys.env`.
+3. If the file is still tracked, remove it from Git's index without deleting
+    the local copy: `git rm --cached -- keys.env`, then commit the removal.
 4. Treat prior commits, forks, clones, caches, and pull-request references as
    potentially retaining the old contents. If history cleanup is needed,
    coordinate a repository-wide history rewrite and force-push carefully; this
@@ -169,6 +184,19 @@ load, direct chat and reviews remain available.
 | GitHub request fails | Check the URL is a public repository main page and retry later if rate-limited |
 | Attachment is rejected | Check its file type and the size limits above |
 | Reference library fails | Use **Rebuild reference library**; chat/review can still run without it |
+| OpenAI is unavailable | Set `OPENAI_API_KEY` in the process environment, restart Buddy, and enable cloud requests |
+
+## Development checks
+
+Install the development tools and run the test suite and lint checks:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m ruff check .
+```
+
+GitHub Actions runs the same tests and lint checks on pushes and pull requests.
 
 ## Project files
 
@@ -176,4 +204,5 @@ load, direct chat and reviews remain available.
 - `buddy_avatar.svg` — Buddy’s knight avatar
 - `requirements.txt` — Python dependencies
 - `knowledge_base/` — optional local security-reference documents
-- `chroma_db/` — local vector index generated from those references
+- `buddy_attachments.py`, `buddy_github.py`, `buddy_models.py`, `buddy_storage.py` — bounded input handling, model selection, and local persistence
+- `tests/` — automated unit tests

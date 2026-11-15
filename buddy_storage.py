@@ -2,12 +2,12 @@
 
 import json
 import os
-from pathlib import Path
 import sqlite3
-from contextlib import contextmanager
-from typing import Any
-from collections.abc import Iterator
 import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
 
 class ConversationStore:
@@ -21,7 +21,7 @@ class ConversationStore:
             self.path.chmod(0o600)
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")

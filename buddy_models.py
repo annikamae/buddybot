@@ -50,7 +50,7 @@ def create_chat_model(
             raise PermissionError("Enable cloud use before selecting an OpenAI model.")
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            raise EnvironmentError(
+            raise OSError(
                 "OpenAI cloud use requires OPENAI_API_KEY in the process environment."
             )
         if model_name not in OPENAI_MODEL_NAMES:

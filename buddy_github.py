@@ -2,8 +2,8 @@
 
 import base64
 import json
-from pathlib import Path, PurePosixPath
 import re
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlsplit
 
 import requests
@@ -13,12 +13,47 @@ MAX_REPO_FILES = 12
 MAX_REPO_FILE_CHARS = 5000
 MAX_REPO_CHARS = 30000
 MAX_TREE_BYTES = 4_000_000
+SECRET_ASSIGNMENT = re.compile(
+    r"(?im)(['\"]?[\w.-]*(?:api[_-]?key|access[_-]?token|"
+    r"client[_-]?secret|password|passwd|secret|private[_-]?key|token)"
+    r"[\w.-]*['\"]?\s*[:=]\s*['\"]?)[^,\r\n'\"]+['\"]?"
+)
+PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?"
+    r"-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    re.DOTALL,
+)
 
 GITHUB_REVIEW_TYPES = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".php", ".html", ".css", ".java",
-    ".c", ".h", ".cpp", ".cs", ".go", ".rs", ".rb", ".sh", ".sql", ".json",
-    ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".conf", ".properties",
-    ".gradle", ".md",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".php",
+    ".html",
+    ".css",
+    ".java",
+    ".c",
+    ".h",
+    ".cpp",
+    ".cs",
+    ".go",
+    ".rs",
+    ".rb",
+    ".sh",
+    ".sql",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".properties",
+    ".gradle",
+    ".md",
 }
 
 
@@ -91,8 +126,17 @@ def _is_review_candidate(entry: dict) -> bool:
     parts = PurePosixPath(path).parts
     basename = PurePosixPath(path).name.casefold()
     ignored_parts = {
-        ".git", ".venv", "venv", "node_modules", "vendor", "dist", "build",
-        "target", "coverage", "__pycache__", "third_party",
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "vendor",
+        "dist",
+        "build",
+        "target",
+        "coverage",
+        "__pycache__",
+        "third_party",
     }
     sensitive_name = re.compile(
         r"(^|[._-])(secret|credentials?|token|id_rsa|id_ed25519|private_key)([._-]|$)",
@@ -144,7 +188,11 @@ def fetch_github_repository(
         entries = tree.get("tree", [])
         if not isinstance(entries, list):
             raise ValueError("GitHub returned an invalid repository file list.")
-        candidates = [entry for entry in entries if isinstance(entry, dict) and _is_review_candidate(entry)]
+        candidates = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and _is_review_candidate(entry)
+        ]
         candidates.sort(
             key=lambda entry: (
                 0
@@ -178,6 +226,13 @@ def fetch_github_repository(
                 except (ValueError, UnicodeError):
                     notes.append(f"Skipped {path}: content was not valid base64 text.")
                     continue
+                redacted = PRIVATE_KEY_BLOCK.sub("[REDACTED PRIVATE KEY]", content)
+                redacted = SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", redacted)
+                if redacted != content:
+                    notes.append(
+                        f"Redacted likely credential values in {path} before review."
+                    )
+                content = redacted
                 remaining = MAX_REPO_CHARS - used_chars
                 if remaining <= 0:
                     notes.append("Stopped at Buddy’s repository text limit.")
@@ -192,7 +247,9 @@ def fetch_github_repository(
                 "Buddy could not find eligible public source or configuration files."
             )
         if len(candidates) > MAX_REPO_FILES:
-            notes.append(f"Only the first {MAX_REPO_FILES} eligible files were selected.")
+            notes.append(
+                f"Only the first {MAX_REPO_FILES} eligible files were selected."
+            )
         if tree.get("truncated"):
             notes.append("GitHub marked the repository file listing as truncated.")
         return owner, repository, branch, files, notes

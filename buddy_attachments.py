@@ -1,9 +1,9 @@
 """Bounded attachment parsing for text, office documents, and images."""
 
 import base64
+import re
 from io import BytesIO
 from pathlib import Path
-import re
 from zipfile import ZipFile
 
 from docx import Document as WordDocument
@@ -15,18 +15,83 @@ MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_PDF_PAGES = 30
 
 TEXT_UPLOAD_TYPES = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".php", ".html", ".css", ".java",
-    ".c", ".h", ".cpp", ".cs", ".go", ".rs", ".rb", ".sh", ".sql", ".json",
-    ".yaml", ".yml", ".xml", ".txt", ".md", ".rst", ".toml", ".ini", ".cfg",
-    ".conf", ".properties", ".gradle", ".csv", ".ipynb",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".php",
+    ".html",
+    ".css",
+    ".java",
+    ".c",
+    ".h",
+    ".cpp",
+    ".cs",
+    ".go",
+    ".rs",
+    ".rb",
+    ".sh",
+    ".sql",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".txt",
+    ".md",
+    ".rst",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".properties",
+    ".gradle",
+    ".csv",
+    ".ipynb",
 }
 
 SUPPORTED_UPLOAD_TYPES = [
-    "py", "js", "jsx", "ts", "tsx", "php", "html", "css", "java", "c",
-    "h", "cpp", "cs", "go", "rs", "rb", "sh", "sql", "json", "yaml",
-    "yml", "xml", "txt", "md", "rst", "toml", "ini", "cfg", "conf",
-    "properties", "gradle", "dockerfile", "ipynb", "csv", "pdf", "docx",
-    "png", "jpg", "jpeg", "webp", "gif",
+    "py",
+    "js",
+    "jsx",
+    "ts",
+    "tsx",
+    "php",
+    "html",
+    "css",
+    "java",
+    "c",
+    "h",
+    "cpp",
+    "cs",
+    "go",
+    "rs",
+    "rb",
+    "sh",
+    "sql",
+    "json",
+    "yaml",
+    "yml",
+    "xml",
+    "txt",
+    "md",
+    "rst",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "properties",
+    "gradle",
+    "dockerfile",
+    "ipynb",
+    "csv",
+    "pdf",
+    "docx",
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+    "gif",
 ]
 
 
@@ -81,8 +146,7 @@ def process_uploads(uploaded_files) -> tuple[str, list[dict[str, str]], list[str
         if extension == ".pdf":
             reader = PdfReader(BytesIO(data), strict=False)
             page_text = [
-                page.extract_text() or ""
-                for page in reader.pages[:MAX_PDF_PAGES]
+                page.extract_text() or "" for page in reader.pages[:MAX_PDF_PAGES]
             ]
             text = "\n\n".join(page_text)
             if len(reader.pages) > MAX_PDF_PAGES:
@@ -117,7 +181,9 @@ def process_uploads(uploaded_files) -> tuple[str, list[dict[str, str]], list[str
 
         remaining = MAX_CODE_CHARS - total_text_chars
         if remaining <= 0:
-            extracted_text.append("[Further files omitted: message text limit reached.]")
+            extracted_text.append(
+                "[Further files omitted: message text limit reached.]"
+            )
             break
         if len(text) > remaining:
             text = text[:remaining] + "\n[File content truncated at the message limit.]"
