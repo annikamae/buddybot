@@ -5,7 +5,8 @@ import pytest
 import buddy_github
 from buddy_github import (
     MAX_REPO_FILES,
-    _is_review_candidate,
+    MAX_REPO_FILE_BYTES,
+    _candidate_skip_reason,
     fetch_github_repository,
     parse_github_repo_url,
 )
@@ -50,16 +51,54 @@ def test_reject_noncanonical_repository_urls(url):
     ],
 )
 def test_skip_generated_and_sensitive_files(path):
-    assert not _is_review_candidate({"type": "blob", "path": path, "size": 20})
+    assert _candidate_skip_reason(
+        {"type": "blob", "path": path, "size": 20}
+    ) is not None
 
 
 def test_accept_small_source_file_and_reject_large_or_nonfile_entries():
-    assert _is_review_candidate({"type": "blob", "path": "src/app.py", "size": 100})
-    assert not _is_review_candidate(
-        {"type": "blob", "path": "src/app.py", "size": 6000}
+    assert (
+        _candidate_skip_reason({"type": "blob", "path": "src/app.py", "size": 100})
+        is None
     )
-    assert not _is_review_candidate({"type": "tree", "path": "src/app.py", "size": 100})
-    assert MAX_REPO_FILES == 12
+    assert (
+        _candidate_skip_reason({"type": "blob", "path": "src/app.py", "size": 6000})
+        is None
+    )
+    assert (
+        _candidate_skip_reason({"type": "tree", "path": "src/app.py", "size": 100})
+        == "not_file"
+    )
+    assert (
+        _candidate_skip_reason(
+            {"type": "blob", "path": "src/app.py", "size": MAX_REPO_FILE_BYTES}
+        )
+        is None
+    )
+    assert (
+        _candidate_skip_reason(
+            {"type": "blob", "path": "src/app.py", "size": MAX_REPO_FILE_BYTES + 1}
+        )
+        == "oversized"
+    )
+    assert MAX_REPO_FILES == 50
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "requirements.txt",
+        "package.json",
+        "package-lock.json",
+        "pyproject.toml",
+        "Cargo.lock",
+        "go.mod",
+        "Gemfile",
+        "Makefile",
+    ],
+)
+def test_dependency_and_build_manifests_are_review_candidates(path):
+    assert _candidate_skip_reason({"type": "blob", "path": path, "size": 100}) is None
 
 
 def test_repository_sample_redacts_common_credentials(monkeypatch):
@@ -83,11 +122,19 @@ def test_repository_sample_redacts_common_credentials(monkeypatch):
         del session, params, limit
         if endpoint == "repos/owner/repo":
             return {"default_branch": "main"}
-        if endpoint.endswith("/git/trees/main"):
+        if endpoint.endswith("/commits/main"):
+            return {
+                "sha": "a" * 40,
+                "commit": {"tree": {"sha": "b" * 40}},
+            }
+        if endpoint.endswith("/git/trees/" + "b" * 40):
             return {
                 "tree": [{"type": "blob", "path": "config.yml", "size": len(content)}]
             }
-        return {"content": base64.b64encode(content.encode("utf-8")).decode("ascii")}
+        return {
+            "type": "file",
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
 
     monkeypatch.setattr(buddy_github.requests, "Session", FakeSession)
     monkeypatch.setattr(buddy_github, "_github_json", fake_github_json)
@@ -104,3 +151,98 @@ def test_repository_sample_redacts_common_credentials(monkeypatch):
     assert "fake-private-key" not in sampled
     assert "[REDACTED]" in sampled
     assert any("Redacted likely credential values" in note for note in notes)
+
+
+def test_truncated_recursive_tree_falls_back_to_directory_walk(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = True
+            self.headers = {}
+
+        def close(self):
+            pass
+
+    calls = []
+
+    def fake_github_json(session, endpoint, params=None, limit=2_000_000):
+        del session, limit
+        calls.append((endpoint, params))
+        if endpoint == "repos/owner/repo":
+            return {"default_branch": "main"}
+        if endpoint.endswith("/commits/main"):
+            return {
+                "sha": "a" * 40,
+                "commit": {"tree": {"sha": "b" * 40}},
+            }
+        if endpoint.endswith("/git/trees/" + "b" * 40):
+            if params == {"recursive": "1"}:
+                return {"tree": [], "truncated": True}
+            return {"tree": [{"type": "tree", "path": "src", "sha": "c" * 40}]}
+        if endpoint.endswith("/git/trees/" + "c" * 40):
+            return {"tree": [{"type": "blob", "path": "app.py", "size": 10}]}
+        assert endpoint.endswith("/contents/src/app.py")
+        assert params == {"ref": "a" * 40}
+        return {
+            "type": "file",
+            "content": base64.b64encode(b"print('safe')").decode("ascii"),
+        }
+
+    monkeypatch.setattr(buddy_github.requests, "Session", FakeSession)
+    monkeypatch.setattr(buddy_github, "_github_json", fake_github_json)
+
+    owner, repository, branch, files, notes = fetch_github_repository(
+        "https://github.com/owner/repo"
+    )
+
+    assert (owner, repository, branch) == ("owner", "repo", "main")
+    assert "src/app.py" in files[0]
+    assert any("truncated" in note.lower() for note in notes)
+    assert any("Reviewed commit:" in note for note in notes)
+    assert len(calls) == 6
+
+
+def test_repository_review_processes_more_than_twelve_files_and_reports_limit(
+    monkeypatch,
+):
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = True
+            self.headers = {}
+
+        def close(self):
+            pass
+
+    commit_sha = "a" * 40
+    tree_sha = "b" * 40
+    entries = [
+        {"type": "blob", "path": f"src/file_{number}.py", "size": 4}
+        for number in range(MAX_REPO_FILES + 3)
+    ]
+
+    def fake_github_json(session, endpoint, params=None, limit=2_000_000):
+        del session, limit
+        if endpoint == "repos/owner/repo":
+            return {"default_branch": "main"}
+        if endpoint.endswith("/commits/main"):
+            return {
+                "sha": commit_sha,
+                "commit": {"tree": {"sha": tree_sha}},
+            }
+        if endpoint.endswith("/git/trees/" + tree_sha):
+            return {"tree": entries}
+        assert endpoint.startswith("repos/owner/repo/contents/")
+        assert params == {"ref": commit_sha}
+        return {
+            "type": "file",
+            "content": base64.b64encode(b"safe").decode("ascii"),
+        }
+
+    monkeypatch.setattr(buddy_github.requests, "Session", FakeSession)
+    monkeypatch.setattr(buddy_github, "_github_json", fake_github_json)
+
+    _, _, _, files, notes = fetch_github_repository("https://github.com/owner/repo")
+
+    assert len(files) == MAX_REPO_FILES
+    assert any(
+        f"first {MAX_REPO_FILES} of {MAX_REPO_FILES + 3}" in note for note in notes
+    )

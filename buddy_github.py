@@ -9,10 +9,14 @@ from urllib.parse import quote, urlsplit
 import requests
 
 GITHUB_API = "https://api.github.com"
-MAX_REPO_FILES = 12
-MAX_REPO_FILE_CHARS = 5000
-MAX_REPO_CHARS = 30000
+MAX_REPO_FILES = 50
+MAX_REPO_FILE_CHARS = 12000
+MAX_REPO_FILE_BYTES = 32_000
+MAX_REPO_CHARS = 100000
 MAX_TREE_BYTES = 4_000_000
+MAX_DIRECTORY_TREE_BYTES = 512_000
+MAX_TREE_REQUESTS = 80
+MAX_TREE_ENTRIES = 25000
 SECRET_ASSIGNMENT = re.compile(
     r"(?im)(['\"]?[\w.-]*(?:api[_-]?key|access[_-]?token|"
     r"client[_-]?secret|password|passwd|secret|private[_-]?key|token)"
@@ -54,6 +58,28 @@ GITHUB_REVIEW_TYPES = {
     ".properties",
     ".gradle",
     ".md",
+}
+IMPORTANT_REVIEW_FILES = {
+    "cargo.lock",
+    "cargo.toml",
+    "composer.json",
+    "composer.lock",
+    "dockerfile",
+    "gemfile",
+    "gemfile.lock",
+    "go.mod",
+    "go.sum",
+    "makefile",
+    "package-lock.json",
+    "package.json",
+    "pipfile",
+    "pipfile.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "pyproject.toml",
+    "requirements.txt",
+    "uv.lock",
+    "yarn.lock",
 }
 
 
@@ -119,10 +145,10 @@ def _github_json(
             raise ValueError("GitHub returned invalid JSON.") from error
 
 
-def _is_review_candidate(entry: dict) -> bool:
+def _candidate_skip_reason(entry: dict) -> str | None:
     path = entry.get("path")
     if entry.get("type") != "blob" or not isinstance(path, str):
-        return False
+        return "not_file"
     parts = PurePosixPath(path).parts
     basename = PurePosixPath(path).name.casefold()
     ignored_parts = {
@@ -137,30 +163,121 @@ def _is_review_candidate(entry: dict) -> bool:
         "coverage",
         "__pycache__",
         "third_party",
+        "secrets",
+        ".secrets",
+        "credentials",
     }
     sensitive_name = re.compile(
-        r"(^|[._-])(secret|credentials?|token|id_rsa|id_ed25519|private_key)([._-]|$)",
+        r"(^|[._-])(secrets?|credentials?|tokens?|id_rsa|id_ed25519|private_key)([._-]|$)",
         re.IGNORECASE,
     )
+    if basename.startswith(".env") or sensitive_name.search(basename):
+        return "sensitive"
+    if Path(basename).suffix.lower() in {".pem", ".key", ".p12", ".pfx", ".p8"}:
+        return "sensitive"
+    if ignored_parts.intersection(part.casefold() for part in parts):
+        return "filtered"
     if (
-        basename.startswith(".env")
-        or sensitive_name.search(basename)
-        or Path(basename).suffix.lower() in {".pem", ".key", ".p12", ".pfx", ".p8"}
-        or ignored_parts.intersection(part.casefold() for part in parts)
-        or (
-            Path(path).suffix.lower() not in GITHUB_REVIEW_TYPES
-            and basename != "dockerfile"
-        )
+        Path(path).suffix.lower() not in GITHUB_REVIEW_TYPES
+        and basename not in IMPORTANT_REVIEW_FILES
     ):
-        return False
+        return "filtered"
     size = entry.get("size")
-    return isinstance(size, int) and 0 <= size <= MAX_REPO_FILE_CHARS
+    if not isinstance(size, int) or size < 0:
+        return "invalid_size"
+    if size > MAX_REPO_FILE_BYTES:
+        return "oversized"
+    return None
 
 
-def fetch_github_repository(
-    url: str,
-) -> tuple[str, str, str, list[str], list[str]]:
-    """Fetch a small, read-only sample of source/config files from a public repo."""
+def _fetch_tree_entries(
+    session: requests.Session,
+    root: str,
+    root_tree_sha: str,
+) -> tuple[list[dict], list[str]]:
+    tree = _github_json(
+        session,
+        f"{root}/git/trees/{quote(root_tree_sha, safe='')}",
+        params={"recursive": "1"},
+        limit=MAX_TREE_BYTES,
+    )
+    entries = tree.get("tree", [])
+    if not isinstance(entries, list):
+        raise ValueError("GitHub returned an invalid repository file list.")
+    if not tree.get("truncated"):
+        return entries, []
+
+    notes = [
+        "GitHub truncated its recursive file listing; Buddy tried a bounded "
+        "directory-by-directory listing."
+    ]
+    collected: list[dict] = []
+    pending = [("", root_tree_sha)]
+    requests_made = 0
+    entries_seen = 0
+    visited_trees = set()
+    while pending:
+        prefix, tree_sha = pending.pop()
+        if (prefix, tree_sha) in visited_trees:
+            continue
+        if requests_made >= MAX_TREE_REQUESTS:
+            notes.append(
+                f"Stopped directory traversal at Buddy's {MAX_TREE_REQUESTS}-request limit."
+            )
+            break
+        visited_trees.add((prefix, tree_sha))
+        try:
+            subtree = _github_json(
+                session,
+                f"{root}/git/trees/{quote(tree_sha, safe='')}",
+                limit=MAX_DIRECTORY_TREE_BYTES,
+            )
+        except (requests.RequestException, ValueError) as error:
+            notes.append(
+                "Directory traversal stopped after GitHub returned "
+                f"{type(error).__name__}."
+            )
+            break
+        requests_made += 1
+        subtree_entries = subtree.get("tree", [])
+        if not isinstance(subtree_entries, list):
+            notes.append("Directory traversal stopped on an invalid GitHub tree.")
+            break
+        if subtree.get("truncated"):
+            notes.append(
+                "GitHub truncated a directory listing; some repository files "
+                "could not be enumerated."
+            )
+        for entry in subtree_entries:
+            if not isinstance(entry, dict):
+                continue
+            entries_seen += 1
+            name = entry.get("path")
+            if not isinstance(name, str) or name in {"", ".", ".."}:
+                continue
+            path = f"{prefix}/{name}" if prefix else name
+            if entry.get("type") == "tree" and isinstance(entry.get("sha"), str):
+                pending.append((path, entry["sha"]))
+            elif entry.get("type") == "blob":
+                collected.append({**entry, "path": path})
+            if entries_seen >= MAX_TREE_ENTRIES:
+                notes.append(
+                    f"Stopped directory traversal at Buddy's {MAX_TREE_ENTRIES}-entry limit."
+                )
+                pending.clear()
+                break
+
+    if collected:
+        return collected, notes
+    notes.append(
+        "Buddy fell back to the partial recursive listing because directory "
+        "traversal did not return any files."
+    )
+    return entries, notes
+
+
+def fetch_github_repository(url: str) -> tuple[str, str, str, list[str], list[str]]:
+    """Fetch a bounded, read-only set of eligible files from a public repo."""
     owner, repository = parse_github_repo_url(url)
     safe_owner = quote(owner, safe="")
     safe_repository = quote(repository, safe="")
@@ -179,32 +296,50 @@ def fetch_github_repository(
         branch = info.get("default_branch")
         if not isinstance(branch, str) or not branch:
             raise ValueError("GitHub did not report a default branch.")
-        tree = _github_json(
+        commit_info = _github_json(
             session,
-            f"{root}/git/trees/{quote(branch, safe='')}",
-            params={"recursive": "1"},
-            limit=MAX_TREE_BYTES,
+            f"{root}/commits/{quote(branch, safe='')}",
+            limit=512_000,
         )
-        entries = tree.get("tree", [])
-        if not isinstance(entries, list):
-            raise ValueError("GitHub returned an invalid repository file list.")
+        commit_sha = commit_info.get("sha")
+        root_tree = commit_info.get("commit", {}).get("tree", {})
+        root_tree_sha = root_tree.get("sha") if isinstance(root_tree, dict) else None
+        if not isinstance(commit_sha, str) or not re.fullmatch(
+            r"[0-9a-fA-F]{40,64}", commit_sha
+        ):
+            raise ValueError("GitHub returned an invalid commit identifier.")
+        if not isinstance(root_tree_sha, str) or not re.fullmatch(
+            r"[0-9a-fA-F]{40,64}", root_tree_sha
+        ):
+            raise ValueError("GitHub returned an invalid repository tree identifier.")
+        entries, notes = _fetch_tree_entries(session, root, root_tree_sha)
+        notes.insert(0, f"Reviewed commit: {commit_sha[:12]}.")
+        skip_counts: dict[str, int] = {}
         candidates = [
             entry
             for entry in entries
-            if isinstance(entry, dict) and _is_review_candidate(entry)
+            if isinstance(entry, dict) and _candidate_skip_reason(entry) is None
         ]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            reason = _candidate_skip_reason(entry)
+            if reason:
+                skip_counts[reason] = skip_counts.get(reason, 0) + 1
         candidates.sort(
             key=lambda entry: (
                 0
                 if Path(entry["path"]).suffix.lower()
                 in {".py", ".js", ".ts", ".tsx", ".java", ".go", ".rs", ".php"}
                 else 1,
+                0
+                if Path(entry["path"]).name.casefold() in IMPORTANT_REVIEW_FILES
+                else 1,
                 entry["path"].count("/"),
                 entry["path"].casefold(),
             )
         )
         files = []
-        notes = []
         used_chars = 0
         for entry in candidates[:MAX_REPO_FILES]:
             path = entry["path"]
@@ -212,17 +347,18 @@ def fetch_github_repository(
                 result = _github_json(
                     session,
                     f"{root}/contents/{quote(path, safe='/')}",
-                    params={"ref": branch},
-                    limit=MAX_REPO_FILE_CHARS * 2,
+                    params={"ref": commit_sha},
+                    limit=MAX_REPO_FILE_BYTES * 2 + 65536,
                 )
                 encoded = result.get("content", "")
-                if not isinstance(encoded, str):
+                if result.get("type") != "file" or not isinstance(encoded, str):
                     notes.append(f"Skipped {path}: GitHub did not return text content.")
                     continue
                 try:
-                    content = base64.b64decode(encoded, validate=False).decode(
-                        "utf-8", errors="replace"
-                    )
+                    content = base64.b64decode(
+                        "".join(encoded.split()),
+                        validate=True,
+                    ).decode("utf-8", errors="replace")
                 except (ValueError, UnicodeError):
                     notes.append(f"Skipped {path}: content was not valid base64 text.")
                     continue
@@ -235,8 +371,14 @@ def fetch_github_repository(
                 content = redacted
                 remaining = MAX_REPO_CHARS - used_chars
                 if remaining <= 0:
-                    notes.append("Stopped at Buddy’s repository text limit.")
+                    notes.append(
+                        f"Stopped at Buddy's {MAX_REPO_CHARS:,}-character text limit."
+                    )
                     break
+                if len(content) > MAX_REPO_FILE_CHARS:
+                    notes.append(
+                        f"Truncated {path} to {MAX_REPO_FILE_CHARS:,} characters."
+                    )
                 content = content[: min(MAX_REPO_FILE_CHARS, remaining)]
                 used_chars += len(content)
                 files.append(f"--- Repository file: {path} ---\n{content}")
@@ -248,10 +390,23 @@ def fetch_github_repository(
             )
         if len(candidates) > MAX_REPO_FILES:
             notes.append(
-                f"Only the first {MAX_REPO_FILES} eligible files were selected."
+                f"Only the first {MAX_REPO_FILES} of {len(candidates)} eligible "
+                "files were selected."
             )
-        if tree.get("truncated"):
-            notes.append("GitHub marked the repository file listing as truncated.")
+        for reason, count in sorted(skip_counts.items()):
+            if reason == "sensitive":
+                notes.append(
+                    f"Filtered {count} files with sensitive names or locations."
+                )
+            elif reason == "oversized":
+                notes.append(
+                    f"Skipped {count} eligible files larger than "
+                    f"{MAX_REPO_FILE_BYTES // 1000} KB."
+                )
+            elif reason == "filtered":
+                notes.append(f"Filtered {count} unsupported or generated files.")
+            elif reason == "invalid_size":
+                notes.append(f"Skipped {count} files with invalid size metadata.")
         return owner, repository, branch, files, notes
     finally:
         session.close()

@@ -19,7 +19,7 @@ public API only when you request a review.
 | Code review | Paste code or attach source/configuration files; request findings, fixes, or secure alternatives |
 | Image review | Attach images; Buddy uses a detected local vision model such as `llava:latest` |
 | Documents | Extract text from PDF and DOCX files; read common text/source formats |
-| GitHub | Fetch a bounded sample of eligible files from a public repository’s default branch; skip sensitive filenames and redact likely credential values |
+| GitHub | Read-only review of eligible files from a public repository’s default branch; skip sensitive filenames and redact likely credential values |
 | Website check | Make a passive HTTP `HEAD` request and inspect common response security headers |
 | Knowledge base | Retrieve relevant excerpts from local `.txt` and `.md` files in `knowledge_base/` |
 
@@ -35,7 +35,7 @@ These are Buddy’s application limits, not security or completeness guarantees.
 | Total attachments in one message | 20 MiB |
 | PDF extraction | First 30 pages |
 | Image sent to vision model | Resized to at most 1,600 × 1,600 pixels |
-| Public GitHub sample | Up to 12 eligible files, 5,000 characters per file, and 30,000 sampled characters total |
+| Public GitHub review | Up to 50 eligible files, 12,000 characters per file, and 100,000 characters total; files over 256 KB are skipped |
 | Conversation context sent to the model | Most recent 10 messages |
 | Website check | One passive `HEAD` request; no redirects followed |
 
@@ -107,14 +107,16 @@ and generated code should be tested before use.
 
 In the sidebar, enter a repository’s main URL, such as
 `https://github.com/owner/repository`, then choose **Fetch & review repository**.
-Buddy reads the default branch and samples up to 12 small source/configuration
-files. It skips common dependency/build directories and obvious secret/key
-filenames, and redacts common credential assignments and private-key blocks
-before adding sampled content to a chat. Review the displayed file list and
-sampling notes. Redaction is best-effort, not a guarantee that every secret is
-detected. No GitHub token is requested or stored; private repositories are not
-supported. A sample review is not a full repository audit, and files outside
-the sample may contain additional issues.
+Buddy reads the default branch at a pinned commit and reviews up to 50 eligible
+source/configuration files within the limits above. If GitHub truncates its
+recursive file listing, Buddy attempts a bounded directory-by-directory walk.
+It skips common dependency/build directories and obvious secret/key filenames,
+and redacts common credential assignments and private-key blocks before adding
+retrieved content to a chat. Review the displayed file list and notes for
+omissions, filtering, truncation, or redaction. Redaction is best-effort, not a
+guarantee that every secret is detected. No GitHub token is requested or stored;
+private repositories are not supported. Large repositories may exceed Buddy's
+file, tree traversal, or text limits, so this is not a full repository audit.
 
 ### Website header checks
 
