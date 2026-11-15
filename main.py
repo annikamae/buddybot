@@ -1,72 +1,49 @@
 import base64
 import http.client
 import json
-from io import BytesIO
 from ipaddress import ip_address
+import os
 from pathlib import Path
-import posixpath
 import re
 import socket
+import sqlite3
 import ssl
-from urllib.parse import quote, urlsplit
-from zipfile import BadZipFile, ZipFile
+from urllib.parse import urlsplit
 
 import httpx
 import requests
 import streamlit as st
-from PIL import Image, UnidentifiedImageError
-from docx import Document as WordDocument
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_ollama import ChatOllama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from ollama import ResponseError as OllamaResponseError
-from pypdf import PdfReader
-from pypdf.errors import PdfReadError
+
+from buddy_attachments import MAX_CODE_CHARS, SUPPORTED_UPLOAD_TYPES, process_uploads
+from buddy_github import fetch_github_repository
+from buddy_models import OPENAI_MODEL_NAMES, discover_ollama_models, create_chat_model
+from buddy_storage import ConversationStore
 
 # ---------- Settings ----------
 BASE_DIR = Path(__file__).resolve().parent
 DOCUMENTS_DIR = BASE_DIR / "knowledge_base"
-CHROMA_DIR = BASE_DIR / "chroma_db"
+APP_DATA_DIR = Path(
+    os.environ.get(
+        "BUDDY_DATA_DIR",
+        str(Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Buddy"),
+    )
+)
+CHROMA_DIR = APP_DATA_DIR / "chroma_db"
+CHAT_DB_PATH = APP_DATA_DIR / "buddy_chats.sqlite3"
 DOCUMENTS_DIR.mkdir(exist_ok=True)
 
 MODEL_NAME = "llama3.2:latest"
 OLLAMA_URL = "http://localhost:11434"
-MAX_CODE_CHARS = 12000
 MAX_HISTORY = 10
-MAX_UPLOAD_BYTES = 8 * 1024 * 1024
-MAX_REPO_FILES = 12
-MAX_REPO_FILE_CHARS = 5000
-MAX_REPO_CHARS = 30000
-MAX_PDF_PAGES = 30
 COLLECTION_NAME = "buddy_security"
 AVATAR_PATH = BASE_DIR / "buddy_avatar.svg"
-GITHUB_API = "https://api.github.com"
 VISION_MODEL_NAME = "llava:latest"
-
-SUPPORTED_UPLOAD_TYPES = [
-    "py", "js", "jsx", "ts", "tsx", "php", "html", "css", "java", "c",
-    "h", "cpp", "cs", "go", "rs", "rb", "sh", "sql", "json", "yaml",
-    "yml", "xml", "txt", "md", "rst", "toml", "ini", "cfg", "conf",
-    "properties", "gradle", "dockerfile", "ipynb", "csv", "pdf", "docx",
-    "png", "jpg", "jpeg", "webp", "gif",
-]
-
-TEXT_UPLOAD_TYPES = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".php", ".html", ".css", ".java",
-    ".c", ".h", ".cpp", ".cs", ".go", ".rs", ".rb", ".sh", ".sql", ".json",
-    ".yaml", ".yml", ".xml", ".txt", ".md", ".rst", ".toml", ".ini", ".cfg",
-    ".conf", ".properties", ".gradle", ".csv", ".ipynb",
-}
-
-GITHUB_REVIEW_TYPES = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".php", ".html", ".css", ".java",
-    ".c", ".h", ".cpp", ".cs", ".go", ".rs", ".rb", ".sh", ".sql", ".json",
-    ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".conf", ".properties",
-    ".gradle", ".md", ".dockerfile",
-}
 
 SYSTEM_PROMPT = """You are Buddy, a practical cybersecurity assistant focused on
 defensive security and secure coding.
@@ -130,8 +107,17 @@ def load_vector_store():
 
 
 @st.cache_resource
-def get_llm(model_name: str = MODEL_NAME):
-    return ChatOllama(model=model_name, base_url=OLLAMA_URL, temperature=0.2)
+def get_llm(provider: str, model_name: str, allow_cloud: bool):
+    return create_chat_model(
+        provider,
+        model_name,
+        allow_cloud=allow_cloud,
+    )
+
+
+@st.cache_data(ttl=30)
+def list_local_models() -> list[str]:
+    return discover_ollama_models(OLLAMA_URL)
 
 
 # ---------- Helper functions ----------
@@ -140,256 +126,6 @@ def get_context(query: str, store) -> str:
         return ""
     docs = store.similarity_search(query[:1000], k=3)
     return "\n\n".join(d.page_content for d in docs)
-
-
-def _safe_filename(filename: str) -> str:
-    name = Path(filename).name
-    return re.sub(r"[^A-Za-z0-9._ -]", "_", name)[:100] or "uploaded file"
-
-
-def process_uploads(uploaded_files):
-    """Extract bounded text and normalized image data from chat attachments."""
-    extracted_text = []
-    images = []
-    names = []
-    total_bytes = 0
-    total_text_chars = 0
-
-    for uploaded in uploaded_files:
-        filename = _safe_filename(uploaded.name)
-        data = uploaded.getvalue()
-        total_bytes += len(data)
-        if len(data) > MAX_UPLOAD_BYTES:
-            raise ValueError(f"{filename} exceeds the 8 MB per-file limit.")
-        if total_bytes > 20 * 1024 * 1024:
-            raise ValueError("Attachments in one message may total at most 20 MB.")
-
-        extension = Path(filename.lower()).suffix
-        names.append(filename)
-        if extension in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-            try:
-                with Image.open(BytesIO(data)) as original:
-                    if original.width * original.height > 20_000_000:
-                        raise ValueError(f"{filename} is too large to safely process.")
-                    image = original.convert("RGB")
-                    image.thumbnail((1600, 1600))
-                    output = BytesIO()
-                    image.save(output, format="JPEG", optimize=True, quality=85)
-            except (
-                Image.DecompressionBombError,
-                UnidentifiedImageError,
-                OSError,
-            ) as error:
-                raise ValueError(f"{filename} is not a readable image.") from error
-            images.append(
-                {
-                    "name": filename,
-                    "mime": "image/jpeg",
-                    "data": base64.b64encode(output.getvalue()).decode("ascii"),
-                }
-            )
-            continue
-
-        if extension == ".pdf":
-            reader = PdfReader(BytesIO(data), strict=False)
-            page_text = []
-            for page in reader.pages[:MAX_PDF_PAGES]:
-                page_text.append(page.extract_text() or "")
-            text = "\n\n".join(page_text)
-            if len(reader.pages) > MAX_PDF_PAGES:
-                text += f"\n[Only the first {MAX_PDF_PAGES} PDF pages were included.]"
-        elif extension == ".docx":
-            with ZipFile(BytesIO(data)) as archive:
-                expanded_size = sum(item.file_size for item in archive.infolist())
-                if expanded_size > 40 * 1024 * 1024:
-                    raise ValueError(f"{filename} expands beyond the 40 MiB safety limit.")
-            document = WordDocument(BytesIO(data))
-            text = "\n".join(
-                item.text
-                for item in document.paragraphs
-                if item.text.strip()
-            )
-            table_text = [
-                " | ".join(cell.text for cell in row.cells)
-                for table in document.tables
-                for row in table.rows
-            ]
-            if table_text:
-                text += "\n\n" + "\n".join(table_text)
-        elif extension in TEXT_UPLOAD_TYPES or filename.lower() in {
-            "dockerfile", "makefile",
-        }:
-            text = data.decode("utf-8-sig", errors="replace")
-        else:
-            raise ValueError(
-                f"{filename} is not a supported text, source, PDF, DOCX, or image file."
-            )
-
-        remaining = MAX_CODE_CHARS - total_text_chars
-        if remaining <= 0:
-            extracted_text.append("[Further files omitted: message text limit reached.]")
-            break
-        if len(text) > remaining:
-            text = text[:remaining] + "\n[File content truncated at the message limit.]"
-        total_text_chars += len(text)
-        extracted_text.append(f"--- File: {filename} ---\n{text}")
-
-    return "\n\n".join(extracted_text), images, names
-
-
-def parse_github_repo_url(url: str) -> tuple[str, str]:
-    try:
-        parsed = urlsplit(url.strip())
-    except ValueError as error:
-        raise ValueError("Enter a valid public GitHub repository URL.") from error
-    if (
-        parsed.scheme.lower() != "https"
-        or parsed.hostname != "github.com"
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("Only public https://github.com/owner/repository links are supported.")
-
-    parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(parts) != 2:
-        raise ValueError("Use the repository’s main URL, such as https://github.com/owner/repo.")
-    owner, repository = parts
-    if repository.endswith(".git"):
-        repository = repository[:-4]
-    valid_segment = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
-    if not valid_segment.fullmatch(owner) or not valid_segment.fullmatch(repository):
-        raise ValueError("The GitHub owner or repository name contains unsupported characters.")
-    return owner, repository
-
-
-def _github_json(session: requests.Session, endpoint: str, params=None, limit=2_000_000):
-    with session.get(
-        f"{GITHUB_API}/{endpoint}",
-        params=params,
-        timeout=(4, 12),
-        allow_redirects=False,
-        stream=True,
-    ) as response:
-        if 300 <= response.status_code < 400:
-            raise ValueError("GitHub returned an unexpected redirect; it was not followed.")
-        if response.status_code == 404:
-            raise ValueError("That repository or file was not found or is not public.")
-        if response.status_code == 403:
-            raise ValueError("GitHub rate-limited this request. Wait a while and try again.")
-        response.raise_for_status()
-        body = bytearray()
-        for chunk in response.iter_content(chunk_size=65536):
-            body.extend(chunk)
-            if len(body) > limit:
-                raise ValueError("GitHub returned more metadata than Buddy allows for one request.")
-        return json.loads(body)
-
-
-def fetch_github_repository(url: str) -> tuple[str, str, str, list[str], list[str]]:
-    """Fetch a small, read-only sample of source/config files from a public repo."""
-    owner, repository = parse_github_repo_url(url)
-    safe_owner = quote(owner, safe="")
-    safe_repository = quote(repository, safe="")
-    root = f"repos/{safe_owner}/{safe_repository}"
-    session = requests.Session()
-    session.trust_env = False
-    session.headers.update(
-        {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "Buddy-Defensive-Review",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-    )
-    try:
-        info = _github_json(session, root, limit=256_000)
-        branch = info.get("default_branch")
-        if not isinstance(branch, str) or not branch:
-            raise ValueError("GitHub did not report a default branch for this repository.")
-        tree = _github_json(
-            session,
-            f"{root}/git/trees/{quote(branch, safe='')}",
-            params={"recursive": "1"},
-            limit=4_000_000,
-        )
-        entries = tree.get("tree", [])
-        ignored_parts = {
-            ".git", ".venv", "venv", "node_modules", "vendor", "dist", "build",
-            "target", "coverage", "__pycache__", "third_party",
-        }
-        secret_name = re.compile(
-            r"(^|[._-])(secret|credentials?|id_rsa|private_key)([._-]|$)",
-            re.IGNORECASE,
-        )
-        candidates = []
-        for entry in entries:
-            path = entry.get("path", "")
-            basename = posixpath.basename(path).lower() if isinstance(path, str) else ""
-            if (
-                entry.get("type") != "blob"
-                or not isinstance(path, str)
-                or basename in {".env", "id_rsa", "id_ed25519"}
-                or secret_name.search(basename)
-                or ignored_parts.intersection(path.split("/"))
-                or (
-                    Path(path).suffix.lower() not in GITHUB_REVIEW_TYPES
-                    and basename != "dockerfile"
-                )
-                or not isinstance(entry.get("size"), int)
-                or entry["size"] > MAX_REPO_FILE_CHARS
-            ):
-                continue
-            candidates.append(entry)
-
-        candidates.sort(
-            key=lambda entry: (
-                0 if Path(entry["path"]).suffix.lower() in {
-                    ".py", ".js", ".ts", ".tsx", ".java", ".go", ".rs", ".php",
-                } else 1,
-                entry["path"].count("/"),
-                entry["path"].lower(),
-            )
-        )
-        files = []
-        notes = []
-        used_chars = 0
-        for entry in candidates[:MAX_REPO_FILES]:
-            path = entry["path"]
-            try:
-                result = _github_json(
-                    session,
-                    f"{root}/contents/{quote(path, safe='/')}",
-                    params={"ref": branch},
-                    limit=MAX_REPO_FILE_CHARS * 2,
-                )
-                encoded = result.get("content", "")
-                if not isinstance(encoded, str):
-                    notes.append(f"Skipped {path}: GitHub did not return text content.")
-                    continue
-                content = base64.b64decode(encoded, validate=False).decode(
-                    "utf-8", errors="replace"
-                )
-                remaining = MAX_REPO_CHARS - used_chars
-                if remaining <= 0:
-                    notes.append("Stopped at Buddy’s repository text limit.")
-                    break
-                content = content[: min(MAX_REPO_FILE_CHARS, remaining)]
-                used_chars += len(content)
-                files.append(f"--- Repository file: {path} ---\n{content}")
-            except (requests.RequestException, ValueError, json.JSONDecodeError) as error:
-                notes.append(f"Skipped {path}: {type(error).__name__}.")
-        if not files:
-            raise ValueError(
-                "Buddy could not find eligible public source or configuration files to review."
-            )
-        if len(candidates) > MAX_REPO_FILES:
-            notes.append(f"Only the first {MAX_REPO_FILES} eligible files were selected.")
-        if tree.get("truncated"):
-            notes.append("GitHub marked the repository file listing as truncated.")
-        return owner, repository, branch, files, notes
-    finally:
-        session.close()
 
 
 def _safe_url_origin(url: str) -> str:
@@ -444,13 +180,7 @@ def _validate_public_url(url: str):
                 type=socket.SOCK_STREAM,
             )
             addresses = {ip_address(record[4][0].split("%", 1)[0]) for record in records}
-    except (
-        BadZipFile,
-        Image.DecompressionBombError,
-        OSError,
-        PdfReadError,
-        ValueError,
-    ) as error:
+    except (OSError, ValueError) as error:
         raise ValueError("The host could not be resolved to a public IP address.") from error
 
     if not addresses or any(not address.is_global for address in addresses):
@@ -532,7 +262,14 @@ def check_headers(url: str) -> str:
     return f"Could not complete the passive header check for {safe_display_url} ({details})."
 
 
-def stream_reply(history, context, model_name):
+def stream_reply(
+    history,
+    context: str,
+    provider: str,
+    model_name: str,
+    vision_model: str,
+    allow_cloud: bool,
+):
     system_text = SYSTEM_PROMPT
     if context:
         system_text += (
@@ -559,8 +296,10 @@ def stream_reply(history, context, model_name):
             messages.append(AIMessage(content=message["content"]))
 
     using_vision = any(message.get("images") for message in history[-MAX_HISTORY:])
-    active_model = VISION_MODEL_NAME if using_vision else model_name
-    for chunk in get_llm(active_model).stream(messages):
+    active_model = (
+        vision_model if using_vision and provider == "ollama" else model_name
+    )
+    for chunk in get_llm(provider, active_model, allow_cloud).stream(messages):
         if isinstance(chunk.content, str):
             yield chunk.content
         elif chunk.content:
@@ -576,23 +315,49 @@ def add_user_message(
     display: str | None = None,
     images: list | None = None,
 ):
-    chat = st.session_state.chats[st.session_state.active_chat_id]
-    chat["messages"].append(
-        {
-            "role": "user",
-            "content": content,
-            "display": display or content,
-            "images": images or [],
-        }
+    conversation_store: ConversationStore = st.session_state.conversation_store
+    conversation_id = st.session_state.active_chat_id
+    message_display = display or content
+    conversation_store.add_message(
+        conversation_id,
+        "user",
+        content,
+        message_display,
+        images,
     )
-    if chat["title"] == "New conversation":
-        title_source = display or content
-        chat["title"] = re.sub(r"\s+", " ", title_source).strip()[:48] or "New conversation"
-    chat["pending"] = True
+    conversation = conversation_store.get_conversation(conversation_id)
+    if conversation and conversation["title"] == "New conversation":
+        title = re.sub(r"\s+", " ", message_display).strip()[:48]
+        conversation_store.update_conversation(
+            conversation_id,
+            title=title or "New conversation",
+        )
+    st.session_state.pending_reply_chat_id = conversation_id
 
 
 # ---------- Page ----------
 st.set_page_config(page_title="Buddy | Security Sidekick", page_icon=str(AVATAR_PATH))
+configured_address = st.get_option("server.address")
+if configured_address:
+    try:
+        is_loopback = ip_address(configured_address).is_loopback
+    except ValueError:
+        is_loopback = configured_address.casefold() == "localhost"
+    if not is_loopback:
+        st.error(
+            "Buddy stores conversations locally and has no user authentication. "
+            "For privacy, it only runs on this computer. Set Streamlit server.address "
+            "to 127.0.0.1 (or localhost) before starting Buddy."
+        )
+        st.stop()
+
+try:
+    conversation_store = ConversationStore(CHAT_DB_PATH)
+except (OSError, sqlite3.Error) as error:
+    st.error(f"Buddy could not open its local conversation database: {error}")
+    st.stop()
+st.session_state.conversation_store = conversation_store
+
 st.markdown(
     """
     <style>
@@ -691,18 +456,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if "chats" not in st.session_state:
-    initial_chat_id = "chat-1"
-    st.session_state.chats = {
-        initial_chat_id: {
-            "title": "New conversation",
-            "messages": [],
-            "pending": False,
-        }
-    }
-    st.session_state.active_chat_id = initial_chat_id
-
-store = None
+conversations = conversation_store.list_conversations()
+if not conversations:
+    first_conversation_id = conversation_store.create_conversation(
+        model=MODEL_NAME,
+        vision_model=VISION_MODEL_NAME,
+    )
+    conversations = conversation_store.list_conversations()
+    st.session_state.active_chat_id = first_conversation_id
+if (
+    "active_chat_id" not in st.session_state
+    or not any(
+        item["id"] == st.session_state.active_chat_id for item in conversations
+    )
+):
+    st.session_state.active_chat_id = conversations[0]["id"]
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -711,46 +479,48 @@ with st.sidebar:
     st.divider()
 
     if st.button("＋  New conversation", use_container_width=True, type="primary"):
-        new_id = f"chat-{len(st.session_state.chats) + 1}-{len(st.session_state.chats)}"
-        while new_id in st.session_state.chats:
-            new_id += "x"
-        st.session_state.chats[new_id] = {
-            "title": "New conversation",
-            "messages": [],
-            "pending": False,
-        }
+        current = conversation_store.get_conversation(
+            st.session_state.active_chat_id
+        )
+        new_id = conversation_store.create_conversation(
+            model=current["model"] if current else MODEL_NAME,
+            vision_model=current["vision_model"] if current else VISION_MODEL_NAME,
+            provider=current["provider"] if current else "ollama",
+        )
         st.session_state.active_chat_id = new_id
+        st.session_state.pending_reply_chat_id = None
         st.session_state.pop("conversation_picker", None)
         st.rerun()
 
-    chat_ids = list(st.session_state.chats)
-    if st.session_state.active_chat_id not in st.session_state.chats:
-        st.session_state.active_chat_id = chat_ids[0]
+    conversations = conversation_store.list_conversations()
     conversation_labels = {
-        f"{st.session_state.chats[chat_id]['title']}  ·  {chat_id}": chat_id
-        for chat_id in chat_ids
+        f"{item['title']}  ·  {item['id'][:8]}": item["id"]
+        for item in conversations
     }
     active_label = next(
         label
-        for label, chat_id in conversation_labels.items()
-        if chat_id == st.session_state.active_chat_id
+        for label, conversation_id in conversation_labels.items()
+        if conversation_id == st.session_state.active_chat_id
     )
+    if st.session_state.get("conversation_picker") not in conversation_labels:
+        st.session_state.conversation_picker = active_label
     selected_label = st.selectbox(
         "Your conversations",
         options=list(conversation_labels),
-        index=list(conversation_labels).index(active_label),
         label_visibility="collapsed",
         key="conversation_picker",
     )
     active_chat_id = conversation_labels[selected_label]
     st.session_state.active_chat_id = active_chat_id
-    active_chat = st.session_state.chats[active_chat_id]
+    active_chat = conversation_store.get_conversation(active_chat_id)
 
-    if len(st.session_state.chats) > 1 and st.button(
+    if len(conversations) > 1 and st.button(
         "Delete this conversation", use_container_width=True
     ):
-        del st.session_state.chats[active_chat_id]
-        st.session_state.active_chat_id = next(iter(st.session_state.chats))
+        conversation_store.delete_conversation(active_chat_id)
+        remaining = conversation_store.list_conversations()
+        st.session_state.active_chat_id = remaining[0]["id"]
+        st.session_state.pending_reply_chat_id = None
         st.session_state.pop("conversation_picker", None)
         st.rerun()
 
@@ -765,18 +535,149 @@ with st.sidebar:
         if rename_chat:
             title = re.sub(r"\s+", " ", renamed_title).strip()
             if title:
-                active_chat["title"] = title
-                st.session_state.pop("conversation_picker", None)
+                conversation_store.update_conversation(active_chat_id, title=title)
                 st.rerun()
 
-    model_name = st.text_input(
-        "Local text model",
-        value=MODEL_NAME,
-        help="Enter an Ollama model installed on this computer.",
-    ).strip() or MODEL_NAME
+    api_key_available = bool(os.environ.get("OPENAI_API_KEY"))
+    allow_cloud = st.checkbox(
+        "Allow OpenAI cloud requests",
+        value=False,
+        help="When enabled, prompts, code, repository samples, and attachments may be sent to OpenAI.",
+        key="allow_openai_cloud",
+    )
+    if allow_cloud:
+        if api_key_available:
+            st.warning(
+                "Cloud mode is enabled. Messages and review content will be sent "
+                "to OpenAI. Switch back to Local Ollama to keep inference on this computer."
+            )
+            provider_options = ["ollama", "openai"]
+        else:
+            st.error(
+                "OpenAI cloud is unavailable. Configure OPENAI_API_KEY in the "
+                "process environment; Buddy never reads keys.env or .env files."
+            )
+            provider_options = ["ollama"]
+    else:
+        provider_options = ["ollama"]
+        st.caption("Local Ollama is selected; inference stays on this computer.")
+
+    provider_labels = {
+        "ollama": "Local Ollama",
+        "openai": "OpenAI (cloud)",
+    }
+    selected_provider = active_chat["provider"]
+    if selected_provider not in provider_options:
+        selected_provider = "ollama"
+        conversation_store.update_conversation(
+            active_chat_id,
+            provider=selected_provider,
+        )
+        active_chat["provider"] = selected_provider
+    provider_label = st.selectbox(
+        "Model provider",
+        options=[provider_labels[item] for item in provider_options],
+        index=provider_options.index(selected_provider),
+        key=f"provider_{active_chat_id}",
+    )
+    provider = next(
+        key for key, label in provider_labels.items() if label == provider_label
+    )
+    if provider != active_chat["provider"]:
+        conversation_store.update_conversation(active_chat_id, provider=provider)
+        active_chat["provider"] = provider
+
+    if provider == "ollama":
+        if st.button("Refresh installed models", use_container_width=True):
+            list_local_models.clear()
+            st.rerun()
+        try:
+            local_models = list_local_models()
+        except (httpx.HTTPError, OllamaResponseError, OSError, ValueError) as error:
+            local_models = []
+            st.error(
+                "Could not read the local Ollama model list. Check that Ollama is "
+                f"running. Details: {type(error).__name__}: {error}"
+            )
+        if local_models:
+            vision_models = [
+                name
+                for name in local_models
+                if any(
+                    family in name.casefold()
+                    for family in (
+                        "llava", "vision", "moondream", "bakllava",
+                        "minicpm-v", "qwen2.5vl", "qwen3-vl", "gemma3",
+                    )
+                )
+            ]
+            selected_model = (
+                active_chat["model"]
+                if active_chat["model"] in local_models
+                else (MODEL_NAME if MODEL_NAME in local_models else local_models[0])
+            )
+            local_model = st.selectbox(
+                "Local text model",
+                options=local_models,
+                index=local_models.index(selected_model),
+                key=f"model_{active_chat_id}",
+            )
+            selected_vision = active_chat["vision_model"]
+            if vision_models:
+                if selected_vision not in vision_models:
+                    selected_vision = (
+                        VISION_MODEL_NAME
+                        if VISION_MODEL_NAME in vision_models
+                        else vision_models[0]
+                    )
+                vision_model = st.selectbox(
+                    "Local image model",
+                    options=vision_models,
+                    index=vision_models.index(selected_vision),
+                    key=f"vision_{active_chat_id}",
+                )
+            else:
+                vision_model = ""
+                st.caption("No local vision model is installed. Images can’t be analyzed yet.")
+            if (
+                local_model != active_chat["model"]
+                or vision_model != active_chat["vision_model"]
+            ):
+                conversation_store.update_conversation(
+                    active_chat_id,
+                    model=local_model,
+                    vision_model=vision_model,
+                )
+                active_chat["model"] = local_model
+                active_chat["vision_model"] = vision_model
+            model_name = local_model
+        else:
+            model_name = ""
+            vision_model = ""
+    else:
+        model_name = st.selectbox(
+            "OpenAI model",
+            options=list(OPENAI_MODEL_NAMES),
+            index=(
+                OPENAI_MODEL_NAMES.index(active_chat["model"])
+                if active_chat["model"] in OPENAI_MODEL_NAMES
+                else 0
+            ),
+            key=f"openai_model_{active_chat_id}",
+        )
+        vision_model = model_name
+        if model_name != active_chat["model"]:
+            conversation_store.update_conversation(
+                active_chat_id,
+                model=model_name,
+                vision_model=vision_model,
+            )
+            active_chat["model"] = model_name
+            active_chat["vision_model"] = vision_model
+
     st.caption(
-        f"Image analysis needs `{VISION_MODEL_NAME}` "
-        f"(install with `ollama pull {VISION_MODEL_NAME}`)."
+        "Cloud credentials are read from the process environment only; restart "
+        "Buddy after changing them."
     )
     st.divider()
 
@@ -830,15 +731,13 @@ with st.sidebar:
     )
 
     if st.button("Clear current conversation", use_container_width=True):
-        active_chat["messages"] = []
-        active_chat["pending"] = False
-        active_chat["title"] = "New conversation"
+        conversation_store.clear_conversation(active_chat_id)
+        if st.session_state.get("pending_reply_chat_id") == active_chat_id:
+            st.session_state.pending_reply_chat_id = None
         st.rerun()
     if st.button("Rebuild reference library", use_container_width=True):
         try:
-            if store is not None:
-                store.delete_collection()
-            elif CHROMA_DIR.exists():
+            if CHROMA_DIR.exists():
                 Chroma(
                     collection_name=COLLECTION_NAME,
                     persist_directory=str(CHROMA_DIR),
@@ -917,7 +816,8 @@ if chat_input:
             )
 
 # ---------- Welcome and conversation history ----------
-if not active_chat["messages"]:
+messages = conversation_store.list_messages(active_chat_id)
+if not messages:
     avatar_column, welcome_column = st.columns([1, 5], vertical_alignment="center")
     with avatar_column:
         st.image(str(AVATAR_PATH), width=112)
@@ -941,7 +841,7 @@ if not active_chat["messages"]:
         "the sidebar to review a public GitHub repository."
     )
 
-for message in active_chat["messages"]:
+for message in messages:
     with st.chat_message(
         message["role"],
         avatar=str(AVATAR_PATH) if message["role"] == "assistant" else "🧑‍💻",
@@ -955,17 +855,28 @@ for message in active_chat["messages"]:
             )
 
 # ---------- Generate the AI answer ----------
-if active_chat["pending"]:
-    active_chat["pending"] = False
+if st.session_state.get("pending_reply_chat_id") == active_chat_id:
+    st.session_state.pending_reply_chat_id = None
     with st.chat_message("assistant", avatar=str(AVATAR_PATH)):
         try:
             store, _ = load_vector_store()
-            context = get_context(active_chat["messages"][-1]["content"], store)
+            messages = conversation_store.list_messages(active_chat_id)
+            context = get_context(messages[-1]["content"], store)
             reply = st.write_stream(
-                stream_reply(active_chat["messages"], context, model_name)
+                stream_reply(
+                    messages,
+                    context,
+                    provider,
+                    model_name,
+                    vision_model,
+                    allow_cloud,
+                )
             )
-            active_chat["messages"].append(
-                {"role": "assistant", "content": reply, "display": reply}
+            conversation_store.add_message(
+                active_chat_id,
+                "assistant",
+                reply,
+                reply,
             )
         except (
             ConnectionError,
@@ -976,13 +887,19 @@ if active_chat["pending"]:
             httpx.HTTPError,
             OllamaResponseError,
         ) as error:
-            message = f"Buddy could not complete this response. Details: {type(error).__name__}: {error}"
-            if any(item.get("images") for item in active_chat["messages"][-MAX_HISTORY:]):
+            message = (
+                "Buddy could not complete this response. Details: "
+                f"{type(error).__name__}: {error}"
+            )
+            if any(item.get("images") for item in messages[-MAX_HISTORY:]):
                 message += (
                     f" Image messages require the vision model; install it with "
-                    f"`ollama pull {VISION_MODEL_NAME}`."
+                    f"`ollama pull {vision_model or VISION_MODEL_NAME}`."
                 )
-            elif "ollama" in str(error).lower() or "model" in str(error).lower():
+            elif provider == "ollama" and (
+                "ollama" in str(error).lower()
+                or "model" in str(error).lower()
+            ):
                 message += (
                     f" Check that Ollama is running and the local model `{model_name}` "
                     "is installed."

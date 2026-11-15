@@ -128,6 +128,10 @@ load, direct chat and reviews remain available.
 
 ## Privacy and safe use
 
+- `keys.env`, `.env` files, virtual environments, and the local Chroma index are
+  excluded by `.gitignore`. Keep credentials in local environment variables or
+  an untracked local env file; never commit them. An ignore rule does not remove
+  a secret already committed or published.
 - Chat and code-review inference run through the local Ollama service by
   default. The optional GitHub feature retrieves public repository files from
   GitHub when explicitly requested.
@@ -139,6 +143,21 @@ load, direct chat and reviews remain available.
 - Use website checks and repository reviews only when authorized.
 - Buddy is an assistant, not a penetration-testing tool, compliance
   certification, or substitute for human security review.
+
+### If a secret was pushed to a public repository
+
+1. Revoke or rotate every credential that may have been in the file. Deleting
+   the file from the latest version does not make an exposed credential safe.
+2. Keep the local secret file untracked. `.gitignore` is now configured for
+   `keys.env`; verify with `git check-ignore -v keys.env`.
+3. Remove the file from Git's index without deleting your local copy:
+   `git rm --cached -- keys.env`, then commit the removal.
+4. Treat prior commits, forks, clones, caches, and pull-request references as
+   potentially retaining the old contents. If history cleanup is needed,
+   coordinate a repository-wide history rewrite and force-push carefully; this
+   changes commit IDs and does not erase existing clones or cached copies.
+5. Review the repository's other files and GitHub secret-scanning alerts for
+   additional exposed credentials.
 
 ## Troubleshooting
 

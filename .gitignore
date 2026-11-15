@@ -1,0 +1,33 @@
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+*.env
+.envrc
+keys.env
+secrets.env
+*.secret
+*.pem
+*.key
+secrets/
+.streamlit/secrets.toml
+
+# Local Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# Local indexes, caches, logs, and editor scratch files
+chroma_db/
+data/
+*.sqlite
+*.sqlite3
+*.db
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+tempCodeRunnerFile.py
