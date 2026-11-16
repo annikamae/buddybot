@@ -190,6 +190,52 @@ def _candidate_skip_reason(entry: dict) -> str | None:
     return None
 
 
+def _review_priority(entry: dict) -> tuple[int, int, int, int, str]:
+    path = PurePosixPath(entry["path"])
+    parts = {part.casefold() for part in path.parts[:-1]}
+    lower_name = path.name.casefold()
+    support_path_parts = {
+        "test",
+        "tests",
+        "testing",
+        "docs",
+        "doc",
+        "examples",
+        "example",
+        "fixtures",
+        "fixture",
+        "benchmarks",
+        "benchmark",
+        "samples",
+        "sample",
+    }
+    support_priority = int(
+        bool(parts.intersection(support_path_parts))
+        or lower_name.startswith(("test_", "tests_", "conftest"))
+    )
+    source_priority = (
+        0
+        if parts.intersection(
+            {"src", "source", "lib", "app", "server", "backend", "frontend", "core"}
+        )
+        else 1
+    )
+    code_priority = (
+        0
+        if Path(lower_name).suffix
+        in {".py", ".js", ".ts", ".tsx", ".java", ".go", ".rs", ".php"}
+        else 1
+    )
+    manifest_priority = 0 if lower_name in IMPORTANT_REVIEW_FILES else 1
+    return (
+        support_priority,
+        source_priority,
+        code_priority,
+        manifest_priority,
+        entry["path"].casefold(),
+    )
+
+
 def _fetch_tree_entries(
     session: requests.Session,
     root: str,
@@ -326,19 +372,7 @@ def fetch_github_repository(url: str) -> tuple[str, str, str, list[str], list[st
             reason = _candidate_skip_reason(entry)
             if reason:
                 skip_counts[reason] = skip_counts.get(reason, 0) + 1
-        candidates.sort(
-            key=lambda entry: (
-                0
-                if Path(entry["path"]).suffix.lower()
-                in {".py", ".js", ".ts", ".tsx", ".java", ".go", ".rs", ".php"}
-                else 1,
-                0
-                if Path(entry["path"]).name.casefold() in IMPORTANT_REVIEW_FILES
-                else 1,
-                entry["path"].count("/"),
-                entry["path"].casefold(),
-            )
-        )
+        candidates.sort(key=_review_priority)
         files = []
         used_chars = 0
         for entry in candidates[:MAX_REPO_FILES]:

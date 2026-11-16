@@ -4,9 +4,10 @@ import pytest
 
 import buddy_github
 from buddy_github import (
-    MAX_REPO_FILES,
     MAX_REPO_FILE_BYTES,
+    MAX_REPO_FILES,
     _candidate_skip_reason,
+    _review_priority,
     fetch_github_repository,
     parse_github_repo_url,
 )
@@ -51,9 +52,9 @@ def test_reject_noncanonical_repository_urls(url):
     ],
 )
 def test_skip_generated_and_sensitive_files(path):
-    assert _candidate_skip_reason(
-        {"type": "blob", "path": path, "size": 20}
-    ) is not None
+    assert (
+        _candidate_skip_reason({"type": "blob", "path": path, "size": 20}) is not None
+    )
 
 
 def test_accept_small_source_file_and_reject_large_or_nonfile_entries():
@@ -99,6 +100,19 @@ def test_accept_small_source_file_and_reject_large_or_nonfile_entries():
 )
 def test_dependency_and_build_manifests_are_review_candidates(path):
     assert _candidate_skip_reason({"type": "blob", "path": path, "size": 100}) is None
+
+
+def test_review_prioritizes_application_source_over_tests_and_docs():
+    application = {
+        "type": "blob",
+        "path": "src/flask/app.py",
+        "size": 100,
+    }
+    test = {"type": "blob", "path": "tests/test_app.py", "size": 100}
+    docs = {"type": "blob", "path": "docs/conf.py", "size": 100}
+
+    assert _review_priority(application) < _review_priority(test)
+    assert _review_priority(application) < _review_priority(docs)
 
 
 def test_repository_sample_redacts_common_credentials(monkeypatch):
