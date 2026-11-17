@@ -32,6 +32,8 @@ def test_parse_public_repository_url(url, expected):
         "https://user:password@github.com/owner/repository",
         "https://github.com/owner/repository?token=secret",
         "https://example.com/owner/repository",
+        "https://github.com/../repository",
+        "https://github.com/owner/..",
     ],
 )
 def test_reject_noncanonical_repository_urls(url):

@@ -97,7 +97,8 @@ def parse_github_repo_url(url: str) -> tuple[str, str]:
         or parsed.fragment
     ):
         raise ValueError(
-            "Only public https://github.com/owner/repository links are supported."
+            "Only https://github.com/owner/repository links without credentials "
+            "or query parameters are supported."
         )
 
     parts = [part for part in parsed.path.strip("/").split("/") if part]
@@ -109,7 +110,12 @@ def parse_github_repo_url(url: str) -> tuple[str, str]:
     if repository.endswith(".git"):
         repository = repository[:-4]
     valid_segment = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
-    if not valid_segment.fullmatch(owner) or not valid_segment.fullmatch(repository):
+    if (
+        owner in {".", ".."}
+        or repository in {".", ".."}
+        or not valid_segment.fullmatch(owner)
+        or not valid_segment.fullmatch(repository)
+    ):
         raise ValueError("The GitHub owner or repository name is invalid.")
     return owner, repository
 

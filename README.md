@@ -20,6 +20,7 @@ public API only when you request a review.
 | Image review | Attach images; Buddy uses a detected local vision model such as `llava:latest` |
 | Documents | Extract text from PDF and DOCX files; read common text/source formats |
 | GitHub | Read-only review of eligible files from a public repository’s default branch; skip sensitive filenames and redact likely credential values |
+| GitHub contribution | Prepare changes on a separate local branch; review and explicitly approve before Buddy commits, pushes, and opens a draft pull request |
 | Website check | Make a passive HTTP `HEAD` request and inspect common response security headers |
 | Knowledge base | Retrieve relevant excerpts from local `.txt` and `.md` files in `knowledge_base/` |
 | Interface | Floating knight avatar, subtly animated conversation-specific stars, and optional soft click sounds |
@@ -54,6 +55,7 @@ by default.
 - [Ollama](https://ollama.com/) installed and running
 - A text model installed in Ollama (the default is `llama3.2:latest`)
 - `llava:latest` in Ollama if you want image analysis
+- [GitHub CLI](https://cli.github.com/) if you want Buddy to prepare contributions or pull requests
 
 ## Install and run on Windows
 
@@ -125,6 +127,39 @@ guarantee that every secret is detected. No GitHub token is requested or stored;
 private repositories are not supported. Large repositories may exceed Buddy's
 file, tree traversal, or text limits, so this is not a full repository audit.
 
+### Preparing a GitHub contribution
+
+Install the official [GitHub CLI](https://cli.github.com/) and sign in from
+PowerShell with `gh auth login`. In Buddy, open **Prepare a GitHub contribution**,
+enter a repository URL you are authorized to modify, and describe the requested
+change. Buddy checks out a shallow copy into
+`%LOCALAPPDATA%\Buddy\contribution_workspaces` (or `BUDDY_DATA_DIR`), creates a
+`buddy/...` branch, samples eligible files within the same limits as repository
+reviews, and asks the selected model for a unified patch.
+
+Review the patch and choose **Apply patch to local branch for review** to apply
+and stage it locally. Inspect the displayed staged diff; Buddy does not switch
+to the default branch, run repository code, or execute tests. Only after you
+check the approval box and choose **Commit, push branch & open draft pull
+request** will Buddy commit that reviewed diff, push its branch, and open a
+draft PR. Opening a PR can trigger the repository's GitHub Actions or other
+workflows, so review the diff and workflow behavior before publishing and
+merging. Buddy clones repositories up to 250 MB and uses the existing review
+limits when sampling source files. It blocks credential paths, Git metadata,
+GitHub workflow/action files, binary changes, renames, and executable files in
+generated patches.
+
+Buddy does not store a GitHub token; GitHub CLI manages its own login and
+permissions. GitHub CLI normally uses the operating system's credential store
+but may fall back to a plain-text credential file if no secure store is
+available. Check `gh auth status` and secure the GitHub CLI credential store.
+Buddy can access only repositories that account can access, and can publish
+only where that account has write permission. Keep the GitHub CLI account's
+permissions as narrow as practical. When OpenAI cloud is selected,
+the requested change and bounded repository samples are sent to OpenAI; with
+local Ollama selected, they remain on this computer. The local checkout and
+generated patches remain on disk even after closing the conversation.
+
 ### Website header checks
 
 Enter a standalone `http://` or `https://` URL in chat and confirm in the
@@ -191,6 +226,8 @@ load, direct chat and reviews remain available.
 | Model is unavailable | Run `ollama pull llama3.2:latest`; for images also run `ollama pull llava:latest` |
 | Buddy cannot connect to Ollama | Confirm Ollama is running locally, then retry |
 | GitHub request fails | Check the URL is a public repository main page and retry later if rate-limited |
+| Contribution cannot start | Install GitHub CLI, run `gh auth login`, and confirm the account can access the repository |
+| Contribution cannot push | Confirm the account has write access; review GitHub CLI authentication and the local Git setup |
 | Attachment is rejected | Check its file type and the size limits above |
 | Reference library fails | Use **Rebuild reference library**; chat/review can still run without it |
 | OpenAI is unavailable | Set `OPENAI_API_KEY` in the process environment, restart Buddy, and enable cloud requests |
@@ -213,5 +250,5 @@ GitHub Actions runs the same tests and lint checks on pushes and pull requests.
 - `buddy_avatar.svg` — Buddy’s knight avatar
 - `requirements.txt` — Python dependencies
 - `knowledge_base/` — optional local security-reference documents
-- `buddy_attachments.py`, `buddy_github.py`, `buddy_models.py`, `buddy_storage.py` — bounded input handling, model selection, and local persistence
+- `buddy_attachments.py`, `buddy_contributor.py`, `buddy_github.py`, `buddy_models.py`, `buddy_storage.py` — bounded input handling, review-first GitHub contribution workflow, model selection, and local persistence
 - `tests/` — automated unit tests

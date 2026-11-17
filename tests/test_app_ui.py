@@ -11,6 +11,12 @@ def test_motion_and_sound_controls_render_without_app_errors(tmp_path, monkeypat
 
     assert not app.exception
     assert any(toggle.label == "Soft interface sounds" for toggle in app.toggle)
+    assert any(
+        text_area.label == "What should Buddy change?" for text_area in app.text_area
+    )
+    assert any(
+        text_input.label == "GitHub repository URL" for text_input in app.text_input
+    )
     html_blocks = [element.value for element in app.html]
     initial_starfield = next(
         block for block in html_blocks if "buddy-starfield" in block
