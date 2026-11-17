@@ -22,6 +22,7 @@ public API only when you request a review.
 | GitHub | Read-only review of eligible files from a public repository’s default branch; skip sensitive filenames and redact likely credential values |
 | Website check | Make a passive HTTP `HEAD` request and inspect common response security headers |
 | Knowledge base | Retrieve relevant excerpts from local `.txt` and `.md` files in `knowledge_base/` |
+| Interface | Floating knight avatar, subtly animated conversation-specific stars, and optional soft click sounds |
 
 ## Processing limits
 
@@ -35,7 +36,7 @@ These are Buddy’s application limits, not security or completeness guarantees.
 | Total attachments in one message | 20 MiB |
 | PDF extraction | First 30 pages |
 | Image sent to vision model | Resized to at most 1,600 × 1,600 pixels |
-| Public GitHub review | Up to 50 eligible files, 12,000 characters per file, and 100,000 characters total; files over 256 KB are skipped |
+| Public GitHub review | Up to 50 eligible files, 12,000 characters per file, and 100,000 characters total; files over 32 KB are skipped |
 | Conversation context sent to the model | Most recent 10 messages |
 | Website check | One passive `HEAD` request; no redirects followed |
 
@@ -90,6 +91,12 @@ Use **New conversation** in the sidebar to start a separate chat. Select and
 rename chats from the sidebar, clear the current chat, or delete it. Chats
 persist locally across app restarts. Anyone with access to the Windows account
 and its app-data files may be able to read them.
+
+Buddy has a gently floating knight avatar and a slow, subtle starfield that
+varies by conversation. Use **Soft interface sounds** in the sidebar to enable
+or mute short, locally generated click chimes. Browsers may wait for your first
+click before allowing sound. The animations respect your operating system's
+reduced-motion preference.
 
 ### Code and file reviews
 

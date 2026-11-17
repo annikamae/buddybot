@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import http.client
 import json
 import os
@@ -119,6 +120,68 @@ def get_llm(provider: str, model_name: str, allow_cloud: bool):
 @st.cache_data(ttl=30)
 def list_local_models() -> list[str]:
     return discover_ollama_models(OLLAMA_URL)
+
+
+UI_SFX_COMPONENT = st.components.v2.component(
+    "buddy_ui_sounds",
+    html='<div data-buddy-sfx-root aria-hidden="true"></div>',
+    js="""
+export default function (component) {
+  const { data, parentElement } = component
+  const root = parentElement.querySelector("[data-buddy-sfx-root]")
+  if (!root) return
+
+  root.dataset.enabled = data?.enabled ? "true" : "false"
+  if (typeof window.__buddySfxCleanup === "function") {
+    window.__buddySfxCleanup()
+  }
+
+  const onClick = (event) => {
+    if (root.dataset.enabled !== "true") return
+    const target = event.target
+    if (!(target instanceof Element)) return
+    const control = target.closest(
+      "button, a, summary, [role='button'], [role='option'], " +
+      "[role='checkbox'], [role='switch'], input[type='checkbox'], input[type='radio']"
+    )
+    if (!control || control.disabled || control.getAttribute("aria-disabled") === "true") {
+      return
+    }
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    if (!AudioContextClass) return
+    const context = window.__buddyAudioContext || new AudioContextClass()
+    window.__buddyAudioContext = context
+    if (context.state === "suspended") context.resume().catch(() => {})
+
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    const now = context.currentTime
+    oscillator.type = "sine"
+    oscillator.frequency.setValueAtTime(620, now)
+    oscillator.frequency.exponentialRampToValueAtTime(880, now + 0.045)
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.018, now + 0.008)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.075)
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.start(now)
+    oscillator.stop(now + 0.08)
+  }
+
+  document.addEventListener("click", onClick, true)
+  const cleanup = () => {
+    document.removeEventListener("click", onClick, true)
+    if (window.__buddySfxCleanup === cleanup) {
+      delete window.__buddySfxCleanup
+    }
+  }
+  window.__buddySfxCleanup = cleanup
+  return cleanup
+}
+""",
+    isolate_styles=False,
+)
 
 
 # ---------- Helper functions ----------
@@ -375,10 +438,75 @@ st.markdown(
         --buddy-white: #f4f8ff;
     }
     .stApp, [data-testid="stAppViewContainer"] {
+        position: relative;
+        isolation: isolate;
         background:
             radial-gradient(ellipse at 75% -12%, rgba(39, 104, 189, .22), transparent 38%),
             var(--buddy-black);
         color: var(--buddy-white);
+    }
+    .buddy-starfield {
+        position: fixed;
+        inset: -6%;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        opacity: .38;
+    }
+    .buddy-starfield::before,
+    .buddy-starfield::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-repeat: repeat;
+        animation: buddy-stars-drift var(--buddy-star-duration) ease-in-out infinite alternate;
+        will-change: transform, opacity;
+    }
+    .buddy-starfield::before {
+        background-image:
+            radial-gradient(1.2px 1.2px at 7% 18%, #d7ecff 55%, transparent 100%),
+            radial-gradient(1px 1px at 21% 76%, #a9d8ff 55%, transparent 100%),
+            radial-gradient(1.4px 1.4px at 38% 32%, #ffffff 55%, transparent 100%),
+            radial-gradient(1px 1px at 53% 86%, #a9d8ff 55%, transparent 100%),
+            radial-gradient(1.2px 1.2px at 68% 14%, #d7ecff 55%, transparent 100%),
+            radial-gradient(1px 1px at 82% 61%, #ffffff 55%, transparent 100%),
+            radial-gradient(1.3px 1.3px at 94% 39%, #a9d8ff 55%, transparent 100%);
+        background-size: 430px 390px;
+        background-position: var(--buddy-star-position-x) var(--buddy-star-position-y);
+    }
+    .buddy-starfield::after {
+        opacity: .55;
+        background-image:
+            radial-gradient(2px 2px at 15% 47%, #68b7ff 45%, transparent 100%),
+            radial-gradient(1.8px 1.8px at 47% 12%, #d7ecff 45%, transparent 100%),
+            radial-gradient(2px 2px at 73% 79%, #68b7ff 45%, transparent 100%),
+            radial-gradient(1.8px 1.8px at 91% 24%, #d7ecff 45%, transparent 100%);
+        background-size: 610px 560px;
+        background-position: var(--buddy-star-position-y) var(--buddy-star-position-x);
+        animation-duration: var(--buddy-twinkle-duration);
+        animation-direction: alternate-reverse;
+    }
+    @keyframes buddy-stars-drift {
+        from { transform: translate3d(-.35%, -.25%, 0) rotate(0deg); opacity: .45; }
+        to { transform: translate3d(.35%, .25%, 0) rotate(var(--buddy-star-rotation)); opacity: 1; }
+    }
+    .buddy-avatar-float {
+        display: grid;
+        place-items: center;
+        min-height: 132px;
+        overflow: visible;
+    }
+    .buddy-avatar-float img {
+        display: block;
+        width: min(112px, 100%);
+        height: auto;
+        filter: drop-shadow(0 10px 20px rgba(67, 151, 239, .3));
+        transform-origin: 50% 65%;
+        animation: buddy-avatar-hover 4.2s ease-in-out infinite;
+    }
+    @keyframes buddy-avatar-hover {
+        0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+        50% { transform: translateY(-11px) rotate(1.5deg); }
     }
     [data-testid="stHeader"] { background: rgba(8, 12, 19, .8); }
     [data-testid="stSidebar"] {
@@ -454,7 +582,12 @@ st.markdown(
         font-size: .78rem;
     }
     @media (prefers-reduced-motion: reduce) {
-        *, *::before, *::after { transition: none !important; }
+        *, *::before, *::after {
+            animation-duration: .01ms !important;
+            animation-iteration-count: 1 !important;
+            scroll-behavior: auto !important;
+            transition: none !important;
+        }
     }
     </style>
     """,
@@ -522,6 +655,18 @@ with st.sidebar:
         st.session_state.pending_reply_chat_id = None
         st.session_state.pop("conversation_picker", None)
         st.rerun()
+
+    sound_enabled = st.toggle(
+        "Soft interface sounds",
+        value=True,
+        key="buddy_ui_sounds_enabled",
+        help="Play a quiet, locally generated chime when you click an interactive control.",
+    )
+    UI_SFX_COMPONENT(
+        key="buddy_ui_sound_bridge",
+        data={"enabled": sound_enabled},
+    )
+    st.caption("Sounds are generated in your browser and can be turned off here.")
 
     with st.expander("Conversation settings"):
         with st.form(f"rename_chat_{active_chat_id}"):
@@ -770,6 +915,35 @@ with st.sidebar:
         except (OSError, RuntimeError, ValueError) as error:
             st.error(f"Could not rebuild the reference library: {error}")
 
+# Give each conversation a stable, subtle variation in its star field.
+star_seed = int.from_bytes(
+    hashlib.blake2s(
+        st.session_state.active_chat_id.encode("ascii"),
+        digest_size=4,
+    ).digest(),
+    "big",
+)
+star_rotation = star_seed % 360
+star_duration = 24 + (star_seed >> 9) % 13
+twinkle_duration = 7 + (star_seed >> 17) % 6
+star_position_x = 10 + star_seed % 80
+star_position_y = 10 + (star_seed >> 8) % 80
+st.html(
+    f"""
+    <div
+        class="buddy-starfield"
+        aria-hidden="true"
+        style="
+            --buddy-star-rotation: {star_rotation}deg;
+            --buddy-star-duration: {star_duration}s;
+            --buddy-twinkle-duration: {twinkle_duration}s;
+            --buddy-star-position-x: {star_position_x}%;
+            --buddy-star-position-y: {star_position_y}%;
+        "
+    ></div>
+    """
+)
+
 # ---------- Chat composer: text, code, images, and documents ----------
 chat_input = st.chat_input(
     "Message Buddy — paste code or attach images and files",
@@ -845,7 +1019,18 @@ messages = conversation_store.list_messages(active_chat_id)
 if not messages:
     avatar_column, welcome_column = st.columns([1, 5], vertical_alignment="center")
     with avatar_column:
-        st.image(str(AVATAR_PATH), width=112)
+        avatar_svg = base64.b64encode(AVATAR_PATH.read_bytes()).decode("ascii")
+        st.html(
+            f"""
+            <div class="buddy-avatar-float">
+                <img
+                    src="data:image/svg+xml;base64,{avatar_svg}"
+                    alt="Buddy, a cute floating knight"
+                />
+            </div>
+            """,
+            width=140,
+        )
     with welcome_column:
         st.markdown(
             """
@@ -877,6 +1062,7 @@ for message in messages:
                 base64.b64decode(image["data"]),
                 caption=image["name"],
                 width=320,
+                alt=image["name"],
             )
 
 # ---------- Generate the AI answer ----------

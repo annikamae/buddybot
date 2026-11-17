@@ -1,3 +1,14 @@
+[theme]
+base = "dark"
+primaryColor = "#4a9cff"
+backgroundColor = "#080c13"
+secondaryBackgroundColor = "#111a27"
+textColor = "#f4f8ff"
+linkColor = "#9dcaff"
+borderColor = "#263950"
+codeBackgroundColor = "#101722"
+baseRadius = "medium"
+
 [server]
 address = "127.0.0.1"
 enableCORS = true
