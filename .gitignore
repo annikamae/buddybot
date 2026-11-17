@@ -31,3 +31,9 @@ data/
 .ruff_cache/
 *.log
 tempCodeRunnerFile.py
+
+# gemini-cli settings
+.gemini/
+
+# GitHub App credentials
+gha-creds-*.json
