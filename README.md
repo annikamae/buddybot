@@ -20,7 +20,7 @@ public API only when you request a review.
 | Image review | Attach images; Buddy uses a detected local vision model such as `llava:latest` |
 | Documents | Extract text from PDF and DOCX files; read common text/source formats |
 | GitHub | Read-only review of eligible files from a public repository’s default branch; skip sensitive filenames and redact likely credential values |
-| GitHub contribution | Prepare changes on a separate local branch; review and explicitly approve before Buddy commits, pushes, and opens a draft pull request |
+| GitHub contribution | Prepare changes on a separate local branch; support automated tasks (like `SECURITY.md` or Dependabot) or custom patches; review and explicitly approve before Buddy commits, pushes, and opens a draft pull request |
 | Website check | Make a passive HTTP `HEAD` request and inspect common response security headers |
 | Knowledge base | Retrieve relevant excerpts from local `.txt` and `.md` files in `knowledge_base/` |
 | Interface | Floating knight avatar, subtly animated conversation-specific stars, and optional soft click sounds |
@@ -79,11 +79,16 @@ Streamlit prints a local address—usually `http://localhost:8501`—to open in 
 browser. Keep the terminal and Ollama running while you use Buddy. To stop the
 app, focus the terminal and press **Ctrl+C**.
 
-### If PowerShell says script activation is disabled
+## Running with Docker
 
-The commands above use the virtual environment’s Python executable directly;
-they do not require activating the environment. If you prefer activation, run
-`.\.venv\Scripts\Activate.ps1` in PowerShell first.
+You can build and run Buddy in a containerized environment:
+
+```bash
+docker build -t buddybot .
+docker run -p 8501:8501 buddybot
+```
+
+*Note:* If using local Ollama on your host machine while running Buddy inside Docker, ensure Buddy can reach your host's Ollama instance (e.g., using `host.docker.internal:11434` or by mapping network settings).
 
 ## Using Buddy
 
@@ -131,11 +136,14 @@ file, tree traversal, or text limits, so this is not a full repository audit.
 
 Install the official [GitHub CLI](https://cli.github.com/) and sign in from
 PowerShell with `gh auth login`. In Buddy, open **Prepare a GitHub contribution**,
-enter a repository URL you are authorized to modify, and describe the requested
-change. Buddy checks out a shallow copy into
+enter a repository URL you are authorized to modify, and pick a contribution task:
+- **Predefined Tasks:** Select options like "Add/Update SECURITY.md" or "Add Dependabot configuration" to let Buddy create standard security configurations automatically.
+- **Custom Changes:** Select "Custom" to describe specific changes you'd like Buddy to make using the selected model.
+
+Buddy checks out a shallow copy into
 `%LOCALAPPDATA%\Buddy\contribution_workspaces` (or `BUDDY_DATA_DIR`), creates a
 `buddy/...` branch, samples eligible files within the same limits as repository
-reviews, and asks the selected model for a unified patch.
+reviews, and prepares a unified patch.
 
 Review the patch and choose **Apply patch to local branch for review** to apply
 and stage it locally. Inspect the displayed staged diff; Buddy does not switch
@@ -250,5 +258,6 @@ GitHub Actions runs the same tests and lint checks on pushes and pull requests.
 - `buddy_avatar.svg` — Buddy’s knight avatar
 - `requirements.txt` — Python dependencies
 - `knowledge_base/` — optional local security-reference documents
+- `buddy_agent.py` — predefined agentic contribution tasks (e.g., standard security policies, dependabot configurations)
 - `buddy_attachments.py`, `buddy_contributor.py`, `buddy_github.py`, `buddy_models.py`, `buddy_storage.py` — bounded input handling, review-first GitHub contribution workflow, model selection, and local persistence
 - `tests/` — automated unit tests
