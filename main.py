@@ -39,6 +39,7 @@ from buddy_contributor import (
 from buddy_github import fetch_github_repository
 from buddy_models import OPENAI_MODEL_NAMES, create_chat_model, discover_ollama_models
 from buddy_storage import ConversationStore
+from buddy_agent import get_contribution_tasks, generate_task_patch
 
 # ---------- Settings ----------
 BASE_DIR = Path(__file__).resolve().parent
@@ -976,10 +977,17 @@ with st.sidebar:
                 placeholder="https://github.com/owner/repository",
                 key="buddy_contribution_url",
             )
+            contribution_tasks = get_contribution_tasks()
+            contribution_type = st.selectbox(
+                "Contribution task",
+                options=["Custom"] + [tasks["title"] for tasks in contribution_tasks.values()],
+                key="buddy_contribution_type",
+            )
             contribution_task = st.text_area(
                 "What should Buddy change?",
                 max_chars=MAX_TASK_CHARS,
                 key="buddy_contribution_task",
+                disabled=(contribution_type != "Custom"),
             )
             prepare_contribution = st.form_submit_button(
                 "Create branch & prepare changes",
@@ -987,6 +995,13 @@ with st.sidebar:
             )
 
         if prepare_contribution:
+            selected_task_key = None
+            if contribution_type != "Custom":
+                selected_task_key = next(
+                    key for key, val in contribution_tasks.items() if val["title"] == contribution_type
+                )
+                contribution_task = contribution_tasks[selected_task_key]["description"]
+
             if not contribution_task.strip():
                 st.error("Describe the change you want Buddy to make.")
             else:
@@ -996,19 +1011,23 @@ with st.sidebar:
                         APP_DATA_DIR / "contribution_workspaces",
                     )
                     workspace_info["task"] = contribution_task.strip()
+                    workspace_info["task_key"] = selected_task_key
                     st.session_state.buddy_contribution_workspace = workspace_info
                     st.session_state.buddy_contribution_patch = ""
                     st.session_state.buddy_contribution_diff = ""
                     st.session_state.buddy_contribution_pr_url = ""
                     with st.spinner("Sampling files and preparing a patch..."):
                         repository_files, sample_notes = sample_workspace(workspace_info)
-                        patch = generate_contribution_patch(
-                            contribution_task,
-                            repository_files,
-                            provider,
-                            model_name,
-                            allow_cloud,
-                        )
+                        if selected_task_key:
+                            patch = generate_task_patch(selected_task_key, repository_files)
+                        else:
+                            patch = generate_contribution_patch(
+                                contribution_task,
+                                repository_files,
+                                provider,
+                                model_name,
+                                allow_cloud,
+                            )
                     st.session_state.buddy_contribution_patch = patch
                     if sample_notes:
                         st.info(" ".join(sample_notes))
@@ -1044,14 +1063,17 @@ with st.sidebar:
                 ):
                     try:
                         repository_files, sample_notes = sample_workspace(workspace_info)
-                        contribution_patch = generate_contribution_patch(
-                            workspace_info["task"],
-                            repository_files,
-                            provider,
-                            model_name,
-                            allow_cloud,
-                        )
-                        st.session_state.buddy_contribution_patch = contribution_patch
+                        if workspace_info.get("task_key"):
+                            patch = generate_task_patch(workspace_info["task_key"], repository_files)
+                        else:
+                            patch = generate_contribution_patch(
+                                workspace_info["task"],
+                                repository_files,
+                                provider,
+                                model_name,
+                                allow_cloud,
+                            )
+                        st.session_state.buddy_contribution_patch = patch
                         if sample_notes:
                             st.info(" ".join(sample_notes))
                     except (
