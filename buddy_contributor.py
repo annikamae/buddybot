@@ -32,6 +32,12 @@ class ContributorError(RuntimeError):
 def _require_cli() -> str:
     executable = shutil.which("gh")
     if not executable:
+        # Windows-specific fallback: GitHub CLI is often installed to a fixed
+        # location but the running process's PATH may predate the install.
+        fallback = Path("C:/Program Files/GitHub CLI/gh.exe")
+        if fallback.exists():
+            executable = str(fallback)
+    if not executable:
         raise ContributorError(
             "GitHub CLI was not found. Install it from https://cli.github.com/, "
             "then run `gh auth login` in PowerShell."
