@@ -223,6 +223,11 @@ def test_publish_refuses_a_changed_git_remote(tmp_path):
 
 def test_missing_github_cli_has_a_clear_setup_error(tmp_path, monkeypatch):
     monkeypatch.setattr(buddy_contributor.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        buddy_contributor,
+        "_GITHUB_CLI_FALLBACK",
+        tmp_path / "missing" / "gh.exe",
+    )
 
     with pytest.raises(ContributorError, match="Install it from"):
         buddy_contributor.create_workspace(

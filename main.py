@@ -98,28 +98,32 @@ SECURITY_HEADERS = [
 # ---------- Cached resources ----------
 @st.cache_resource(show_spinner="Loading security references...")
 def load_vector_store():
-    source_documents = [
-        Document(
-            page_content=path.read_text(encoding="utf-8", errors="ignore"),
-            metadata={"source": str(path)},
-        )
-        for path in DOCUMENTS_DIR.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".txt", ".md"}
-    ]
-    if not source_documents:
-        return None, 0
+    try:
+        source_documents = [
+            Document(
+                page_content=path.read_text(encoding="utf-8", errors="ignore"),
+                metadata={"source": str(path)},
+            )
+            for path in DOCUMENTS_DIR.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".txt", ".md"}
+        ]
+        if not source_documents:
+            return None, 0
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    chunks = splitter.split_documents(source_documents)
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    store = Chroma(
-        collection_name=COLLECTION_NAME,
-        embedding_function=embeddings,
-        persist_directory=str(CHROMA_DIR),
-    )
-    ids = [f"{c.metadata['source']}:{i}" for i, c in enumerate(chunks)]
-    store.add_documents(chunks, ids=ids)
-    return store, len(chunks)
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+        chunks = splitter.split_documents(source_documents)
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        store = Chroma(
+            collection_name=COLLECTION_NAME,
+            embedding_function=embeddings,
+            persist_directory=str(CHROMA_DIR),
+        )
+        ids = [f"{c.metadata['source']}:{i}" for i, c in enumerate(chunks)]
+        store.add_documents(chunks, ids=ids)
+        return store, len(chunks)
+    except (ConnectionError, OSError) as error:
+        st.warning(f"Could not load vector store: {error}. Falling back to empty store.")
+        return None, 0
 
 
 @st.cache_resource
